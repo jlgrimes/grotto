@@ -1,6 +1,8 @@
 # Grotto 🪸
 
-Multi-agent orchestration for [OpenClaw](https://github.com/openclaw/openclaw). Give your agent a team.
+**Claude Code teammates. OpenClaw steering the ship.**
+
+Spawn a team of [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in tmux that work in parallel — coordinated by your [OpenClaw](https://github.com/openclaw/openclaw) agent as team lead.
 
 ## Install
 
@@ -11,7 +13,6 @@ Tell your OpenClaw agent:
 Or manually:
 
 ```bash
-# Install the CLI
 git clone https://github.com/jlgrimes/grotto.git /tmp/grotto
 cd /tmp/grotto && cargo install --path crates/grotto-cli
 rm -rf /tmp/grotto
@@ -20,9 +21,7 @@ rm -rf /tmp/grotto
 cp -r skill/ ~/.openclaw/workspace/skills/grotto/
 ```
 
-## What it does
-
-Your OpenClaw agent spawns Claude Code sessions in tmux panes that work on tasks in parallel. The agent acts as team lead — spawning, steering, and monitoring a team of coding agents.
+## How it works
 
 ```
 ┌─────────────────────────────────────┐
@@ -33,6 +32,8 @@ Your OpenClaw agent spawns Claude Code sessions in tmux panes that work on tasks
   │Agent 1 │ │Agent 2 │ │Agent 3 │  ← Claude Code in tmux
   └────────┘ └────────┘ └────────┘
 ```
+
+Your OpenClaw agent spawns Claude Code sessions as tmux panes. They self-organize via a shared task board, communicate with each other, and ship code in parallel. The lead steers in real-time — no fire-and-forget.
 
 ## Requirements
 
