@@ -1,17 +1,19 @@
 // Grotto Agent Monitor — pixi.js frontend
-// Connects to ws://localhost:9090/ws for real-time agent events
+// Connects to ws://host/ws/:session-id for real-time agent events
 
 (async function () {
   'use strict';
 
   // --- Constants ---
-  const WS_URL = `ws://${location.host}/ws`;
+  // Extract session ID from URL path (e.g., /crimson-coral-tide -> crimson-coral-tide)
+  const SESSION_ID = location.pathname.replace(/^\//, '').replace(/\/$/, '');
+  const WS_URL = `ws://${location.host}/ws/${SESSION_ID}`;
   const SAND_Y_RATIO = 0.75; // sand line at 75% of stage height
-  const CRAB_SCALE = 2;
+  const LOBSTER_SCALE = 2;
   const PIXEL = 4; // size of one "pixel" in the pixel art
 
-  // Crab colors for each agent
-  const CRAB_COLORS = [
+  // Lobster colors for each agent
+  const LOBSTER_COLORS = [
     0xe06050, // coral red
     0x50a0e0, // ocean blue
     0xe0c050, // sandy gold
@@ -24,7 +26,7 @@
   let agents = {};
   let tasks = [];
   let config = {};
-  let crabSprites = {};
+  let lobsterSprites = {};
   let ws = null;
   let reconnectTimer = null;
 
@@ -42,9 +44,9 @@
 
   // --- Scene layers ---
   const bgLayer = new PIXI.Container();
-  const crabLayer = new PIXI.Container();
+  const lobsterLayer = new PIXI.Container();
   const labelLayer = new PIXI.Container();
-  app.stage.addChild(bgLayer, crabLayer, labelLayer);
+  app.stage.addChild(bgLayer, lobsterLayer, labelLayer);
 
   // --- Draw ocean background ---
   function drawBackground() {
@@ -118,17 +120,17 @@
     bgLayer.addChild(coral);
   }
 
-  // --- Pixel Art Crab ---
-  // Draws a crab using rectangles (pixel art style)
-  // Returns a Container with the crab graphics
-  function createCrab(agentId, colorIndex) {
+  // --- Pixel Art Lobster ---
+  // Draws a lobster using rectangles (pixel art style)
+  // Returns a Container with the lobster graphics
+  function createLobster(agentId, colorIndex) {
     const p = PIXEL;
-    const color = CRAB_COLORS[colorIndex % CRAB_COLORS.length];
+    const color = LOBSTER_COLORS[colorIndex % LOBSTER_COLORS.length];
     const darkColor = darken(color, 0.7);
     const lightColor = lighten(color, 1.3);
 
-    const crab = new PIXI.Container();
-    crab.label = agentId;
+    const lobster = new PIXI.Container();
+    lobster.label = agentId;
 
     // Body (elliptical blob made of pixel rects)
     const bodyPixels = [
@@ -159,7 +161,7 @@
     }
     body.fill(lightColor);
 
-    crab.addChild(body);
+    lobster.addChild(body);
 
     // Eyes
     const eyes = new PIXI.Graphics();
@@ -175,7 +177,7 @@
     eyes.rect(2 * p + p / 2, -2 * p, p / 2, p);
     eyes.rect(5 * p + p / 2, -2 * p, p / 2, p);
     eyes.fill(0x111111);
-    crab.addChild(eyes);
+    lobster.addChild(eyes);
 
     // Claws (left)
     const leftClaw = new PIXI.Graphics();
@@ -184,7 +186,7 @@
     leftClaw.rect(-4 * p, 0 * p, p, p);
     leftClaw.fill(darkColor);
     leftClaw.label = 'leftClaw';
-    crab.addChild(leftClaw);
+    lobster.addChild(leftClaw);
 
     // Claws (right)
     const rightClaw = new PIXI.Graphics();
@@ -193,7 +195,7 @@
     rightClaw.rect(10 * p, 0 * p, p, p);
     rightClaw.fill(darkColor);
     rightClaw.label = 'rightClaw';
-    crab.addChild(rightClaw);
+    lobster.addChild(rightClaw);
 
     // Legs (3 per side)
     const legs = new PIXI.Graphics();
@@ -208,11 +210,11 @@
     }
     legs.fill(darkColor);
     legs.label = 'legs';
-    crab.addChild(legs);
+    lobster.addChild(legs);
 
-    // Center the crab
-    crab.pivot.set((7 * p) / 2, (5 * p) / 2);
-    crab.scale.set(CRAB_SCALE);
+    // Center the lobster
+    lobster.pivot.set((7 * p) / 2, (5 * p) / 2);
+    lobster.scale.set(LOBSTER_SCALE);
 
     // Agent name label
     const label = new PIXI.Text({
@@ -240,16 +242,16 @@
     statusLabel.anchor.set(0.5, 0);
     statusLabel.label = 'statusLabel';
 
-    // Wrapper container that holds crab + labels
+    // Wrapper container that holds lobster + labels
     const wrapper = new PIXI.Container();
-    wrapper.addChild(crab);
+    wrapper.addChild(lobster);
     wrapper.addChild(label);
     wrapper.addChild(statusLabel);
     wrapper.label = agentId;
 
-    // Position labels relative to crab
-    label.position.set(0, -CRAB_SCALE * 3 * p);
-    statusLabel.position.set(0, CRAB_SCALE * 4 * p);
+    // Position labels relative to lobster
+    label.position.set(0, -LOBSTER_SCALE * 3 * p);
+    statusLabel.position.set(0, LOBSTER_SCALE * 4 * p);
 
     // Animation state
     wrapper._anim = {
@@ -286,11 +288,11 @@
     frameCount++;
     const dt = app.ticker.deltaTime;
 
-    for (const [id, wrapper] of Object.entries(crabSprites)) {
+    for (const [id, wrapper] of Object.entries(lobsterSprites)) {
       const anim = wrapper._anim;
-      const crab = wrapper.children[0]; // the crab container
-      const leftClaw = crab.children.find(c => c.label === 'leftClaw');
-      const rightClaw = crab.children.find(c => c.label === 'rightClaw');
+      const lobster = wrapper.children[0]; // the lobster container
+      const leftClaw = lobster.children.find(c => c.label === 'leftClaw');
+      const rightClaw = lobster.children.find(c => c.label === 'rightClaw');
       anim.frame += dt;
 
       if (anim.state === 'spawning') {
@@ -312,15 +314,15 @@
         // Occasional direction change
         if (Math.random() < 0.003) {
           anim.walkDir *= -1;
-          crab.scale.x = CRAB_SCALE * anim.walkDir;
+          lobster.scale.x = LOBSTER_SCALE * anim.walkDir;
         }
 
         wrapper.x += anim.walkDir * anim.walkSpeed * 0.3 * dt;
 
         // Keep on screen
         const margin = 60;
-        if (wrapper.x < margin) { anim.walkDir = 1; crab.scale.x = CRAB_SCALE; }
-        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; crab.scale.x = -CRAB_SCALE; }
+        if (wrapper.x < margin) { anim.walkDir = 1; lobster.scale.x = LOBSTER_SCALE; }
+        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; lobster.scale.x = -LOBSTER_SCALE; }
 
         // Gentle claw wave
         if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.05) * 2;
@@ -342,14 +344,14 @@
         }
 
         // Slight rocking
-        crab.rotation = Math.sin(anim.frame * 0.1) * 0.03;
+        lobster.rotation = Math.sin(anim.frame * 0.1) * 0.03;
 
       } else if (anim.state === 'completed') {
         // Victory dance — bounce + spin
         const bounce = Math.abs(Math.sin(anim.frame * 0.12)) * 15;
         wrapper.y = app.screen.height * SAND_Y_RATIO - 10 - bounce;
 
-        crab.rotation = Math.sin(anim.frame * 0.15) * 0.2;
+        lobster.rotation = Math.sin(anim.frame * 0.15) * 0.2;
 
         if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.3) * 6;
         if (rightClaw) rightClaw.y = Math.sin(anim.frame * 0.3 + Math.PI) * 6;
@@ -357,7 +359,7 @@
         // Transition to idle after some time
         if (anim.frame > anim.danceStart + 200) {
           anim.state = 'idle';
-          crab.rotation = 0;
+          lobster.rotation = 0;
         }
       }
 
@@ -384,9 +386,9 @@
     }
   });
 
-  // --- Place crabs on screen ---
-  function layoutCrabs() {
-    const ids = Object.keys(crabSprites);
+  // --- Place lobsters on screen ---
+  function layoutLobsters() {
+    const ids = Object.keys(lobsterSprites);
     const count = ids.length;
     if (count === 0) return;
 
@@ -394,7 +396,7 @@
     const spacing = w / (count + 1);
 
     for (let i = 0; i < ids.length; i++) {
-      const wrapper = crabSprites[ids[i]];
+      const wrapper = lobsterSprites[ids[i]];
       const targetX = spacing * (i + 1);
       if (wrapper._anim.state === 'spawning') {
         wrapper.x = targetX;
@@ -403,26 +405,26 @@
     }
   }
 
-  // --- Ensure crab sprites match agent state ---
-  function syncCrabs() {
+  // --- Ensure lobster sprites match agent state ---
+  function syncLobsters() {
     const agentIds = Object.keys(agents);
 
-    // Create missing crabs
+    // Create missing lobsters
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i];
-      if (!crabSprites[id]) {
-        const wrapper = createCrab(id, i);
+      if (!lobsterSprites[id]) {
+        const wrapper = createLobster(id, i);
         wrapper.x = app.screen.width / 2;
         wrapper.y = app.screen.height * SAND_Y_RATIO + 30;
         wrapper._anim.state = 'spawning';
-        crabSprites[id] = wrapper;
-        crabLayer.addChild(wrapper);
+        lobsterSprites[id] = wrapper;
+        lobsterLayer.addChild(wrapper);
       }
     }
 
     // Update states
     for (const [id, agent] of Object.entries(agents)) {
-      const wrapper = crabSprites[id];
+      const wrapper = lobsterSprites[id];
       if (!wrapper) continue;
 
       const anim = wrapper._anim;
@@ -441,7 +443,7 @@
       }
     }
 
-    layoutCrabs();
+    layoutLobsters();
   }
 
   // --- Task Board UI ---
@@ -575,7 +577,7 @@
           config = event.config;
           document.getElementById('task-label').textContent = config.task || '';
         }
-        syncCrabs();
+        syncLobsters();
         renderTaskBoard();
         break;
 
@@ -585,7 +587,7 @@
             ...agents[event.agent_id],
             ...event.data,
           };
-          syncCrabs();
+          syncLobsters();
         }
         addLogEntry(event);
         break;
@@ -640,14 +642,14 @@
             if (agent) {
               agent.state = 'working';
               agent.current_task = event.task_id;
-              syncCrabs();
+              syncLobsters();
             }
           } else if (rawType === 'task_completed' && event.agent_id) {
             const agent = agents[event.agent_id];
             if (agent) {
               agent.state = 'idle';
               agent.current_task = null;
-              syncCrabs();
+              syncLobsters();
             }
           }
         }
@@ -670,7 +672,7 @@
   // --- Window resize ---
   function onResize() {
     drawBackground();
-    layoutCrabs();
+    layoutLobsters();
   }
 
   window.addEventListener('resize', () => {
@@ -680,6 +682,14 @@
 
   // --- Init ---
   drawBackground();
+
+  // Set session ID in header if element exists
+  const sessionEl = document.getElementById('session-id');
+  if (sessionEl && SESSION_ID) {
+    sessionEl.textContent = SESSION_ID;
+    document.title = `Grotto — ${SESSION_ID}`;
+  }
+
   connectWS();
 
 })();

@@ -1,3 +1,6 @@
+pub mod daemon;
+pub mod words;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,6 +31,8 @@ pub struct Config {
     pub agent_count: usize,
     pub task: String,
     pub project_dir: PathBuf,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,10 +92,12 @@ impl Grotto {
         fs::create_dir_all(grotto_dir.join("agents"))?;
         fs::create_dir_all(grotto_dir.join("messages"))?;
         
+        let session_id = words::generate_session_id();
         let config = Config {
             agent_count,
             task: task.clone(),
             project_dir,
+            session_id: Some(session_id),
         };
         
         // Write config
@@ -476,6 +483,21 @@ mod tests {
         let config_str = fs::read_to_string(dir.join(".grotto/config.toml")).unwrap();
         assert!(config_str.contains("my task"));
         assert!(config_str.contains("agent_count = 2"));
+        assert!(config_str.contains("session_id"));
+    }
+
+    #[test]
+    fn new_generates_session_id() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let sid = grotto.config.session_id.as_ref().unwrap();
+        let parts: Vec<&str> = sid.split('-').collect();
+        assert_eq!(parts.len(), 3, "session_id should be adjective-noun-noun: {}", sid);
+
+        // Verify it's persisted and loadable
+        let loaded = Grotto::load(&dir).unwrap();
+        assert_eq!(loaded.config.session_id, grotto.config.session_id);
     }
 
     #[test]

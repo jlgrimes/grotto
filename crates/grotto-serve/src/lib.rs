@@ -1,20 +1,26 @@
 use axum::{
     Router,
     extract::{
-        State, WebSocketUpgrade,
+        Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    response::IntoResponse,
-    routing::get,
+    response::{Html, IntoResponse, Response},
+    routing::{delete, get, post},
+    Json,
 };
 use futures::{SinkExt, StreamExt};
 use grotto_core::{AgentState, Event, Grotto};
+use grotto_core::daemon::{self, SessionEntry, SessionRegistry};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher, EventKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
+
+// ---------------------------------------------------------------------------
+// Public types (kept backward-compatible)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsEvent {
@@ -53,21 +59,69 @@ pub struct ConfigInfo {
     pub project_dir: String,
 }
 
-#[derive(Clone)]
-pub struct AppState {
+// ---------------------------------------------------------------------------
+// Session registry types
+// ---------------------------------------------------------------------------
+
+/// Runtime state for a live session (in-memory, per-session broadcast + watcher)
+struct LiveSession {
+    pub entry: SessionEntry,
     pub tx: broadcast::Sender<String>,
-    pub grotto_dir: PathBuf,
+    /// Dropping this handle stops the watcher task
+    _watcher_abort: tokio::task::AbortHandle,
 }
 
-impl AppState {
-    fn build_snapshot(&self) -> WsEvent {
-        let grotto = Grotto::load(
-            self.grotto_dir.parent().unwrap_or(Path::new(".")),
-        );
+/// Shared daemon state
+pub struct DaemonState {
+    sessions: RwLock<HashMap<String, LiveSession>>,
+    web_dir: Option<PathBuf>,
+}
+
+impl DaemonState {
+    fn new(web_dir: Option<PathBuf>) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            web_dir,
+        }
+    }
+
+    /// Persist current session list to the SessionRegistry on disk
+    async fn save(&self) {
+        let sessions = self.sessions.read().await;
+        let mut registry = SessionRegistry::default();
+        for session in sessions.values() {
+            registry.register(session.entry.clone());
+        }
+        let _ = registry.save();
+    }
+
+    /// Load sessions from the SessionRegistry on disk and start file watchers
+    async fn load_persisted(state: &Arc<DaemonState>) {
+        let registry = SessionRegistry::load();
+        for (_, entry) in registry.sessions {
+            let dir = PathBuf::from(&entry.dir);
+            let grotto_dir = dir.join(".grotto");
+            if !grotto_dir.exists() {
+                continue; // stale session, skip
+            }
+            let (tx, _rx) = broadcast::channel::<String>(256);
+            let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
+            let mut sessions = state.sessions.write().await;
+            sessions.insert(entry.id.clone(), LiveSession {
+                entry,
+                tx,
+                _watcher_abort: abort_handle,
+            });
+        }
+    }
+
+    fn build_snapshot_for(grotto_dir: &std::path::Path) -> WsEvent {
+        let project_dir = grotto_dir.parent().unwrap_or(std::path::Path::new("."));
+        let grotto = Grotto::load(project_dir);
 
         match grotto {
             Ok(g) => {
-                let tasks = parse_task_board(&self.grotto_dir.join("tasks.md"));
+                let tasks = parse_task_board(&grotto_dir.join("tasks.md"));
                 WsEvent {
                     event_type: "snapshot".to_string(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -99,7 +153,24 @@ impl AppState {
     }
 }
 
-fn parse_task_board(path: &Path) -> Vec<TaskInfo> {
+// Keep the old AppState for backward-compat with the single-session `run_server`
+#[derive(Clone)]
+pub struct AppState {
+    pub tx: broadcast::Sender<String>,
+    pub grotto_dir: PathBuf,
+}
+
+impl AppState {
+    pub fn build_snapshot(&self) -> WsEvent {
+        DaemonState::build_snapshot_for(&self.grotto_dir)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task board parsing (unchanged)
+// ---------------------------------------------------------------------------
+
+fn parse_task_board(path: &std::path::Path) -> Vec<TaskInfo> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
@@ -125,7 +196,6 @@ fn parse_task_board(path: &Path) -> Vec<TaskInfo> {
         }
 
         if let Some(mut t) = task {
-            // Check next line for "Claimed by:" info
             if i + 1 < lines.len() {
                 let next = lines[i + 1].trim();
                 if let Some(agent) = next.strip_prefix("- Claimed by: ") {
@@ -141,7 +211,6 @@ fn parse_task_board(path: &Path) -> Vec<TaskInfo> {
 }
 
 fn parse_task_line(rest: &str, status: &str) -> Option<TaskInfo> {
-    // Format: **task-id** - description
     let rest = rest.strip_prefix("**")?;
     let (id, remainder) = rest.split_once("**")?;
     let description = remainder.strip_prefix(" - ").unwrap_or(remainder).trim();
@@ -153,6 +222,10 @@ fn parse_task_line(rest: &str, status: &str) -> Option<TaskInfo> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Single-session server (backward compatible — used by `grotto serve`)
+// ---------------------------------------------------------------------------
+
 pub async fn run_server(grotto_dir: PathBuf, port: u16, web_dir: Option<PathBuf>) -> std::io::Result<()> {
     let (tx, _rx) = broadcast::channel::<String>(256);
     let state = AppState {
@@ -160,7 +233,6 @@ pub async fn run_server(grotto_dir: PathBuf, port: u16, web_dir: Option<PathBuf>
         grotto_dir: grotto_dir.clone(),
     };
 
-    // Start file watcher in background
     let watcher_tx = tx.clone();
     let watcher_dir = grotto_dir.clone();
     tokio::spawn(async move {
@@ -174,7 +246,6 @@ pub async fn run_server(grotto_dir: PathBuf, port: u16, web_dir: Option<PathBuf>
         .route("/health", get(health_handler))
         .with_state(state);
 
-    // Serve static web files if directory exists
     if let Some(web_path) = web_dir {
         if web_path.exists() {
             let serve_dir = tower_http::services::ServeDir::new(&web_path)
@@ -183,7 +254,6 @@ pub async fn run_server(grotto_dir: PathBuf, port: u16, web_dir: Option<PathBuf>
         }
     }
 
-    // Add CORS for development
     let cors = tower_http::cors::CorsLayer::permissive();
     let app = app.layer(cors);
 
@@ -202,22 +272,20 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    ws.on_upgrade(move |socket| handle_ws(socket, state.tx.clone(), state.grotto_dir.clone()))
 }
 
-async fn handle_ws(socket: WebSocket, state: AppState) {
+async fn handle_ws(socket: WebSocket, tx: broadcast::Sender<String>, grotto_dir: PathBuf) {
     let (mut sender, mut receiver) = socket.split();
 
     // Send snapshot on connect
-    let snapshot = state.build_snapshot();
+    let snapshot = DaemonState::build_snapshot_for(&grotto_dir);
     if let Ok(json) = serde_json::to_string(&snapshot) {
         let _ = sender.send(Message::Text(json.into())).await;
     }
 
-    // Subscribe to broadcast channel
-    let mut rx = state.tx.subscribe();
+    let mut rx = tx.subscribe();
 
-    // Forward broadcast events to this WS client
     let mut send_task = tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
             if sender.send(Message::Text(msg.into())).await.is_err() {
@@ -226,18 +294,302 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Read from client (just drain — we don't expect client messages)
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(_msg)) = receiver.next().await {
-            // Client messages ignored for now
-        }
+        while let Some(Ok(_msg)) = receiver.next().await {}
     });
 
-    // Wait for either task to finish
     tokio::select! {
         _ = &mut send_task => { recv_task.abort(); }
         _ = &mut recv_task => { send_task.abort(); }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-session daemon server
+// ---------------------------------------------------------------------------
+
+/// API request body for registering a session
+#[derive(Debug, Deserialize)]
+pub struct RegisterSession {
+    pub id: String,
+    pub dir: String,
+}
+
+/// API response for session info
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub id: String,
+    pub dir: String,
+    pub agent_count: Option<usize>,
+    pub task: Option<String>,
+}
+
+/// Run the multi-session daemon server
+pub async fn run_daemon(port: u16, web_dir: Option<PathBuf>) -> std::io::Result<()> {
+    daemon::write_pid(std::process::id())?;
+
+    let state = Arc::new(DaemonState::new(web_dir));
+
+    // Load any previously-registered sessions
+    DaemonState::load_persisted(&state).await;
+
+    let daemon_state = state.clone();
+
+    let app = Router::new()
+        .route("/api/sessions", get({
+            let s = daemon_state.clone();
+            move || api_list_sessions(s)
+        }))
+        .route("/api/sessions", post({
+            let s = daemon_state.clone();
+            move |body| api_register_session(s, body)
+        }))
+        .route("/api/sessions/{id}", delete({
+            let s = daemon_state.clone();
+            move |path| api_unregister_session(s, path)
+        }))
+        .route("/api/sessions/{id}/events", get({
+            let s = daemon_state.clone();
+            move |path| api_session_events(s, path)
+        }))
+        .route("/ws/{id}", get({
+            let s = daemon_state.clone();
+            move |path, ws| daemon_ws_handler(s, path, ws)
+        }))
+        .route("/health", get(health_handler))
+        .fallback({
+            let s = daemon_state.clone();
+            move |req: axum::http::Request<axum::body::Body>| daemon_fallback(s, req)
+        })
+        .layer(tower_http::cors::CorsLayer::permissive());
+
+    let addr = format!("0.0.0.0:{}", port);
+    println!("🪸 Grotto daemon listening on http://0.0.0.0:{}", port);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    // Clean up PID file on shutdown
+    let result = axum::serve(listener, app).await;
+    let _ = daemon::remove_pid();
+    result
+}
+
+// ---------------------------------------------------------------------------
+// REST API handlers
+// ---------------------------------------------------------------------------
+
+async fn api_list_sessions(state: Arc<DaemonState>) -> impl IntoResponse {
+    let sessions = state.sessions.read().await;
+    let mut result: Vec<SessionResponse> = Vec::new();
+
+    for session in sessions.values() {
+        result.push(SessionResponse {
+            id: session.entry.id.clone(),
+            dir: session.entry.dir.clone(),
+            agent_count: Some(session.entry.agent_count),
+            task: Some(session.entry.task.clone()),
+        });
+    }
+
+    Json(result)
+}
+
+async fn api_register_session(
+    state: Arc<DaemonState>,
+    Json(body): Json<RegisterSession>,
+) -> impl IntoResponse {
+    let dir = PathBuf::from(&body.dir);
+    let grotto_dir = dir.join(".grotto");
+
+    if !grotto_dir.exists() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "No .grotto directory found at specified path"})),
+        );
+    }
+
+    let (tx, _rx) = broadcast::channel::<String>(256);
+    let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
+
+    // Read task info from the grotto state
+    let (agent_count, task) = match Grotto::load(&dir) {
+        Ok(g) => (g.config.agent_count, g.config.task),
+        Err(_) => (0, String::new()),
+    };
+
+    let entry = SessionEntry {
+        id: body.id.clone(),
+        dir: body.dir.clone(),
+        agent_count,
+        task,
+    };
+
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.insert(body.id.clone(), LiveSession {
+            entry,
+            tx,
+            _watcher_abort: abort_handle,
+        });
+    }
+
+    state.save().await;
+
+    (
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({"id": body.id, "status": "registered"})),
+    )
+}
+
+async fn api_unregister_session(
+    state: Arc<DaemonState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut sessions = state.sessions.write().await;
+    if sessions.remove(&id).is_some() {
+        drop(sessions);
+        state.save().await;
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"id": id, "status": "unregistered"})),
+        )
+    } else {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Session '{}' not found", id)})),
+        )
+    }
+}
+
+async fn api_session_events(
+    state: Arc<DaemonState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let sessions = state.sessions.read().await;
+    match sessions.get(&id) {
+        Some(session) => {
+            let events_path = PathBuf::from(&session.entry.dir).join(".grotto").join("events.jsonl");
+            let content = std::fs::read_to_string(events_path).unwrap_or_default();
+            let events: Vec<serde_json::Value> = content
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            (axum::http::StatusCode::OK, Json(serde_json::json!(events)))
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Session '{}' not found", id)})),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-session WebSocket handler
+// ---------------------------------------------------------------------------
+
+async fn daemon_ws_handler(
+    state: Arc<DaemonState>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let sessions = state.sessions.read().await;
+    match sessions.get(&id) {
+        Some(session) => {
+            let tx = session.tx.clone();
+            let grotto_dir = PathBuf::from(&session.entry.dir).join(".grotto");
+            drop(sessions);
+            ws.on_upgrade(move |socket| handle_ws(socket, tx, grotto_dir))
+                .into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("Session '{}' not found", id),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon fallback — serves index, session pages, and static files
+// ---------------------------------------------------------------------------
+
+/// Custom fallback: `/` → index.html, `/:session-id` → session.html, else static file
+async fn daemon_fallback(
+    state: Arc<DaemonState>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Response {
+    let path = req.uri().path();
+
+    let Some(web_dir) = &state.web_dir else {
+        return (axum::http::StatusCode::NOT_FOUND, "no web directory configured").into_response();
+    };
+
+    // Root → serve index.html
+    if path == "/" {
+        return match tokio::fs::read_to_string(web_dir.join("index.html")).await {
+            Ok(html) => Html(html).into_response(),
+            Err(_) => (axum::http::StatusCode::NOT_FOUND, "index.html not found").into_response(),
+        };
+    }
+
+    let segment = path.trim_start_matches('/');
+
+    // Static files — anything with a file extension
+    if segment.contains('.') {
+        let file_path = web_dir.join(segment);
+        return match tokio::fs::read(&file_path).await {
+            Ok(content) => {
+                let mime = mime_from_ext(&file_path);
+                ([(axum::http::header::CONTENT_TYPE, mime)], content).into_response()
+            }
+            Err(_) => (axum::http::StatusCode::NOT_FOUND, "file not found").into_response(),
+        };
+    }
+
+    // Session route — serve session.html for registered session IDs
+    let sessions = state.sessions.read().await;
+    let is_session = sessions.contains_key(segment);
+    drop(sessions);
+
+    if is_session {
+        return match tokio::fs::read_to_string(web_dir.join("session.html")).await {
+            Ok(html) => Html(html).into_response(),
+            Err(_) => (axum::http::StatusCode::NOT_FOUND, "session.html not found").into_response(),
+        };
+    }
+
+    (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+fn mime_from_ext(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-session file watcher (spawned as a tokio task)
+// ---------------------------------------------------------------------------
+
+/// Spawn a file watcher for a session's .grotto/ directory.
+/// Returns an AbortHandle — dropping it stops the watcher task.
+fn spawn_session_watcher(
+    grotto_dir: PathBuf,
+    tx: broadcast::Sender<String>,
+) -> tokio::task::AbortHandle {
+    let handle = tokio::spawn(async move {
+        if let Err(e) = run_file_watcher(grotto_dir, tx).await {
+            eprintln!("File watcher error: {}", e);
+        }
+    });
+    handle.abort_handle()
 }
 
 async fn run_file_watcher(
@@ -246,7 +598,6 @@ async fn run_file_watcher(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel(256);
 
-    // Track last known event count for incremental reading
     let event_line_count = Arc::new(RwLock::new(count_lines(&grotto_dir.join("events.jsonl"))));
 
     let mut watcher = RecommendedWatcher::new(
@@ -260,7 +611,6 @@ async fn run_file_watcher(
 
     watcher.watch(&grotto_dir, RecursiveMode::Recursive)?;
 
-    // Keep watcher alive
     let _watcher = watcher;
 
     while let Some(event) = notify_rx.recv().await {
@@ -292,7 +642,6 @@ async fn run_file_watcher(
                                 }
                             }
                             "status.json" => {
-                                // Agent status changed
                                 if let Ok(content) = tokio::fs::read_to_string(path).await {
                                     if let Ok(agent) = serde_json::from_str::<AgentState>(&content) {
                                         let ws_event = WsEvent {
@@ -316,7 +665,6 @@ async fn run_file_watcher(
                                 }
                             }
                             "tasks.md" => {
-                                // Task board changed — parse and broadcast
                                 let tasks = parse_task_board(path);
                                 let ws_event = WsEvent {
                                     event_type: "task:updated".to_string(),
@@ -345,14 +693,14 @@ async fn run_file_watcher(
     Ok(())
 }
 
-fn count_lines(path: &Path) -> usize {
+fn count_lines(path: &std::path::Path) -> usize {
     std::fs::read_to_string(path)
         .map(|c| c.lines().count())
         .unwrap_or(0)
 }
 
 async fn read_new_events(
-    path: &Path,
+    path: &std::path::Path,
     line_count: &Arc<RwLock<usize>>,
 ) -> Vec<Event> {
     let content = match tokio::fs::read_to_string(path).await {
@@ -378,6 +726,10 @@ async fn read_new_events(
     *prev = lines.len();
     events
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -438,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_count_lines_missing_file() {
-        assert_eq!(count_lines(Path::new("/nonexistent/file")), 0);
+        assert_eq!(count_lines(std::path::Path::new("/nonexistent/file")), 0);
     }
 
     #[test]
@@ -458,7 +810,6 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"agent:status\""));
         assert!(json.contains("agent-1"));
-        // Verify None fields are skipped
         assert!(!json.contains("task_id"));
         assert!(!json.contains("\"data\""));
     }
@@ -501,25 +852,82 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("events.jsonl");
 
-        // Write initial events
         let event1 = r#"{"timestamp":"2025-01-01T00:00:00Z","event_type":"test","agent_id":null,"task_id":null,"message":"first","data":{}}"#;
         std::fs::write(&path, format!("{}\n", event1)).unwrap();
 
         let line_count = Arc::new(RwLock::new(0usize));
 
-        // First read should get 1 event
         let events = read_new_events(&path, &line_count).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message, Some("first".to_string()));
 
-        // Append another event
         let event2 = r#"{"timestamp":"2025-01-01T00:00:01Z","event_type":"test","agent_id":null,"task_id":null,"message":"second","data":{}}"#;
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         std::io::Write::write_all(&mut file, format!("{}\n", event2).as_bytes()).unwrap();
 
-        // Second read should only get the new event
         let events = read_new_events(&path, &line_count).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message, Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_session_entry_serialization() {
+        let entry = SessionEntry {
+            id: "crimson-coral-tide".to_string(),
+            dir: "/home/user/project".to_string(),
+            agent_count: 3,
+            task: "build stuff".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("crimson-coral-tide"));
+        let back: SessionEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "crimson-coral-tide");
+        assert_eq!(back.agent_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_state_save_load() {
+        let tmp = TempDir::new().unwrap();
+
+        let state = Arc::new(DaemonState::new(None));
+
+        // Register a mock session
+        let project_dir = tmp.path().join("project1");
+        let _grotto = Grotto::new(&project_dir, 2, "test".into()).unwrap();
+        let grotto_dir = project_dir.join(".grotto");
+
+        let (tx, _rx) = broadcast::channel::<String>(16);
+        let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
+
+        {
+            let mut sessions = state.sessions.write().await;
+            sessions.insert("test-session".to_string(), LiveSession {
+                entry: SessionEntry {
+                    id: "test-session".to_string(),
+                    dir: project_dir.display().to_string(),
+                    agent_count: 2,
+                    task: "test".to_string(),
+                },
+                tx,
+                _watcher_abort: abort_handle,
+            });
+        }
+
+        state.save().await;
+
+        // Verify the registry was persisted
+        let registry = SessionRegistry::load();
+        assert_eq!(registry.sessions.len(), 1);
+        assert!(registry.sessions.contains_key("test-session"));
+    }
+
+    #[test]
+    fn test_mime_from_ext() {
+        assert_eq!(mime_from_ext(std::path::Path::new("style.css")), "text/css; charset=utf-8");
+        assert_eq!(mime_from_ext(std::path::Path::new("app.js")), "application/javascript; charset=utf-8");
+        assert_eq!(mime_from_ext(std::path::Path::new("index.html")), "text/html; charset=utf-8");
+        assert_eq!(mime_from_ext(std::path::Path::new("data.json")), "application/json");
+        assert_eq!(mime_from_ext(std::path::Path::new("image.png")), "image/png");
+        assert_eq!(mime_from_ext(std::path::Path::new("unknown.xyz")), "application/octet-stream");
     }
 }

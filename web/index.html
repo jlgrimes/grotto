@@ -3,31 +3,203 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Grotto — Agent Monitor</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Grotto — Sessions</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0e1a;
+      --sand: #d4a857;
+      --coral: #e06050;
+      --text: #e0d8c8;
+      --text-dim: #8899aa;
+      --panel-bg: #101828;
+      --panel-border: #2a3a50;
+      --green: #50c878;
+      --yellow: #e0c050;
+      --water-light: #2a5a8c;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Courier New', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      width: 100%;
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--panel-border);
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 {
+      font-size: 22px;
+      color: var(--coral);
+      letter-spacing: 3px;
+    }
+    header .subtitle {
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+    main {
+      max-width: 800px;
+      width: 100%;
+      padding: 32px 24px;
+    }
+    .empty-state {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 60px 20px;
+      font-size: 14px;
+      line-height: 2;
+    }
+    .empty-state code {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      padding: 2px 8px;
+      border-radius: 3px;
+      color: var(--sand);
+    }
+    .session-card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      padding: 18px 22px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.15s;
+    }
+    .session-card:hover {
+      border-color: var(--coral);
+    }
+    .session-name {
+      font-size: 17px;
+      font-weight: bold;
+      color: var(--sand);
+      letter-spacing: 1px;
+    }
+    .session-dir {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .session-info {
+      flex: 1;
+    }
+    .session-meta {
+      text-align: right;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .session-agents {
+      color: var(--water-light);
+      margin-bottom: 4px;
+    }
+    .session-status {
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .session-status.active {
+      background: #1a3a2a;
+      color: var(--green);
+    }
+    .session-status.inactive {
+      background: #2a2a2a;
+      color: var(--text-dim);
+    }
+    .coral-icon {
+      font-size: 28px;
+      flex-shrink: 0;
+    }
+    .loading {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 40px;
+    }
+  </style>
 </head>
 <body>
-  <div id="header">
+  <header>
     <h1>Grotto</h1>
-    <span id="connection-status" class="disconnected">disconnected</span>
-    <span id="task-label"></span>
-  </div>
+    <span class="subtitle">Multi-Agent Sessions</span>
+  </header>
 
-  <div id="stage-container">
-    <canvas id="pixi-canvas"></canvas>
-  </div>
+  <main>
+    <div id="sessions" class="loading">Loading sessions...</div>
+  </main>
 
-  <div id="sidebar">
-    <h2>Task Board</h2>
-    <div id="task-board"></div>
-  </div>
+  <script>
+    (function () {
+      'use strict';
 
-  <div id="event-log">
-    <h2>Events</h2>
-    <div id="log-entries"></div>
-  </div>
+      const container = document.getElementById('sessions');
 
-  <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.js"></script>
-  <script src="app.js"></script>
+      function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+      }
+
+      function renderSessions(sessions) {
+        if (!sessions || sessions.length === 0) {
+          container.innerHTML =
+            '<div class="empty-state">' +
+            'No active sessions.<br>' +
+            'Start one with <code>grotto spawn 3 "your task"</code>' +
+            '</div>';
+          return;
+        }
+
+        container.innerHTML = sessions.map(function (s) {
+          var agentText = (s.agent_count || 0) + ' agent' + ((s.agent_count || 0) !== 1 ? 's' : '');
+          var statusClass = s.active !== false ? 'active' : 'inactive';
+          var statusText = s.active !== false ? 'active' : 'idle';
+
+          return '<a class="session-card" href="/' + esc(s.id) + '">' +
+            '<span class="coral-icon">&#x1F9C0;</span>' +
+            '<div class="session-info">' +
+            '<div class="session-name">' + esc(s.id) + '</div>' +
+            '<div class="session-dir">' + esc(s.dir || '') + '</div>' +
+            '</div>' +
+            '<div class="session-meta">' +
+            '<div class="session-agents">' + agentText + '</div>' +
+            '<span class="session-status ' + statusClass + '">' + statusText + '</span>' +
+            '</div>' +
+            '</a>';
+        }).join('');
+      }
+
+      function fetchSessions() {
+        fetch('/api/sessions')
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            renderSessions(data);
+          })
+          .catch(function () {
+            container.innerHTML =
+              '<div class="empty-state">' +
+              'Could not reach daemon API.<br>' +
+              'Is <code>grotto daemon start</code> running?' +
+              '</div>';
+          });
+      }
+
+      // Fetch immediately, then poll every 5s
+      fetchSessions();
+      setInterval(fetchSessions, 5000);
+    })();
+  </script>
 </body>
 </html>

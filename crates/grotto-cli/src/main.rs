@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use grotto_core::{Grotto, Result};
+use grotto_core::daemon::{self, SessionEntry, SessionRegistry};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::env;
@@ -85,6 +86,35 @@ enum Commands {
         #[arg(long)]
         no_open: bool,
     },
+    /// Manage the grotto daemon (persistent multi-session server)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    /// Internal: run the daemon server process (used by `daemon start`)
+    #[command(hide = true)]
+    DaemonServe {
+        /// Port to listen on
+        #[arg(long, default_value = "9091")]
+        port: u16,
+        /// Path to web UI directory
+        #[arg(long)]
+        web_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Start the daemon server (background)
+    Start {
+        /// Port to listen on
+        #[arg(long, default_value = "9091")]
+        port: u16,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Check daemon status
+    Status,
 }
 
 fn main() {
@@ -137,6 +167,12 @@ fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
         Commands::Serve { port, no_open } => {
             serve(project_dir, port, no_open)
         },
+        Commands::Daemon { action } => {
+            run_daemon(project_dir, action)
+        },
+        Commands::DaemonServe { port, web_dir } => {
+            daemon_serve(port, web_dir)
+        },
     }
 }
 
@@ -163,9 +199,10 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
         .output();
     
     println!("🪸 Spawning {} agents for task: {}", count, task);
-    
-    // Initialize grotto project
+
+    // Initialize grotto project (generates session ID)
     let grotto = Grotto::new(&project_dir, count, task)?;
+    let session_id = grotto.config.session_id.as_deref().unwrap_or("unknown");
     
     // Create new tmux session with first agent
     let first_agent_prompt = grotto.generate_claude_prompt("agent-1");
@@ -210,9 +247,24 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
         .output();
     
     println!("✅ Spawned {} agents in tmux session 'grotto'", count);
+    println!("   Session: {}", session_id);
     println!("   Use 'grotto view' to attach and see all agents");
     println!("   Use 'grotto status' to see task board");
-    
+
+    // Register with daemon if running
+    if daemon::is_daemon_running() {
+        let mut registry = SessionRegistry::load();
+        registry.register(SessionEntry {
+            id: session_id.to_string(),
+            dir: project_dir.display().to_string(),
+            agent_count: count,
+            task: grotto.config.task.clone(),
+        });
+        let _ = registry.save();
+        let url = daemon::daemon_url(9091);
+        println!("   🪸 Portal: {}/{}", url, session_id);
+    }
+
     Ok(())
 }
 
@@ -361,18 +413,31 @@ fn broadcast_message(project_dir: PathBuf, message: String) -> Result<()> {
 fn kill_target(project_dir: PathBuf, target: String) -> Result<()> {
     if target == "all" {
         println!("💀 Killing entire grotto session...");
-        
+
+        // Unregister from daemon if running
+        if daemon::is_daemon_running() {
+            if let Ok(grotto) = Grotto::load(&project_dir) {
+                if let Some(session_id) = &grotto.config.session_id {
+                    let mut registry = SessionRegistry::load();
+                    if registry.unregister(session_id).is_some() {
+                        let _ = registry.save();
+                        println!("   Unregistered session '{}' from daemon", session_id);
+                    }
+                }
+            }
+        }
+
         let output = Command::new("tmux")
             .args(["kill-session", "-t", "grotto"])
             .output()
             .expect("Failed to kill tmux session");
-        
+
         if output.status.success() {
             println!("✅ Grotto session killed");
         } else {
             println!("❌ Failed to kill session (may not exist)");
         }
-        
+
         return Ok(());
     }
     
@@ -609,4 +674,149 @@ fn serve(project_dir: PathBuf, port: u16, no_open: bool) -> Result<()> {
             grotto_core::GrottoError::Io(e)
         })
     })
+}
+
+fn run_daemon(_project_dir: PathBuf, action: DaemonAction) -> Result<()> {
+    match action {
+        DaemonAction::Start { port } => daemon_start(port),
+        DaemonAction::Stop => daemon_stop(),
+        DaemonAction::Status => daemon_status(),
+    }
+}
+
+fn daemon_start(port: u16) -> Result<()> {
+    // Check if already running
+    if daemon::is_daemon_running() {
+        let pid = daemon::read_pid().unwrap_or(0);
+        println!("Daemon already running (PID {})", pid);
+        return Ok(());
+    }
+
+    // Find the grotto binary path (ourselves)
+    let exe = env::current_exe().map_err(|e| {
+        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+    })?;
+
+    // Ensure daemon state directory exists
+    daemon::ensure_daemon_dir().map_err(grotto_core::GrottoError::Io)?;
+
+    // Look for web/ directory — check a few reasonable places
+    let web_dir = find_web_dir();
+
+    println!("🪸 Starting grotto daemon on port {}...", port);
+
+    // Build the command args for the daemon subprocess
+    let mut args = vec![
+        "daemon-serve".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ];
+    if let Some(ref web) = web_dir {
+        args.push("--web-dir".to_string());
+        args.push(web.to_string_lossy().to_string());
+    }
+
+    // Fork a background process
+    let child = Command::new(&exe)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(grotto_core::GrottoError::Io)?;
+
+    let pid = child.id();
+    daemon::write_pid(pid).map_err(grotto_core::GrottoError::Io)?;
+
+    let url = daemon::daemon_url(port);
+    println!("Daemon started (PID {})", pid);
+    println!("   Portal: {}", url);
+
+    Ok(())
+}
+
+fn daemon_stop() -> Result<()> {
+    match daemon::read_pid() {
+        Some(pid) => {
+            println!("Stopping daemon (PID {})...", pid);
+
+            // Send SIGTERM
+            let output = Command::new("kill")
+                .arg(pid.to_string())
+                .output()
+                .map_err(grotto_core::GrottoError::Io)?;
+
+            if output.status.success() {
+                daemon::remove_pid().map_err(grotto_core::GrottoError::Io)?;
+                println!("Daemon stopped");
+            } else {
+                eprintln!("Failed to stop daemon (PID may be stale)");
+                daemon::remove_pid().map_err(grotto_core::GrottoError::Io)?;
+            }
+        }
+        None => {
+            println!("No daemon running (no PID file found)");
+        }
+    }
+    Ok(())
+}
+
+fn daemon_status() -> Result<()> {
+    if daemon::is_daemon_running() {
+        let pid = daemon::read_pid().unwrap_or(0);
+        println!("Daemon: running (PID {})", pid);
+
+        // Show registered sessions
+        let registry = SessionRegistry::load();
+        if registry.sessions.is_empty() {
+            println!("Sessions: none");
+        } else {
+            println!("Sessions ({}):", registry.sessions.len());
+            for (id, entry) in &registry.sessions {
+                println!("  {} - {} ({} agents)", id, entry.dir, entry.agent_count);
+            }
+        }
+    } else {
+        println!("Daemon: not running");
+        // Clean up stale PID file
+        if daemon::read_pid().is_some() {
+            let _ = daemon::remove_pid();
+        }
+    }
+    Ok(())
+}
+
+fn daemon_serve(port: u16, web_dir: Option<PathBuf>) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+    })?;
+
+    rt.block_on(async {
+        grotto_serve::run_daemon(port, web_dir).await.map_err(|e| {
+            grotto_core::GrottoError::Io(e)
+        })
+    })
+}
+
+/// Find the web/ directory, checking common locations.
+fn find_web_dir() -> Option<PathBuf> {
+    // 1. Relative to the binary
+    if let Ok(exe) = env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            // Check if we're in target/debug or target/release
+            let project_root = bin_dir.parent().and_then(|p| p.parent());
+            if let Some(root) = project_root {
+                let web = root.join("web");
+                if web.exists() {
+                    return Some(web);
+                }
+            }
+        }
+    }
+    // 2. Current directory
+    let cwd_web = PathBuf::from("web");
+    if cwd_web.exists() {
+        return Some(cwd_web.canonicalize().ok()?);
+    }
+    None
 }
