@@ -76,6 +76,15 @@ enum Commands {
         /// Task ID to complete
         task_id: String,
     },
+    /// Start the real-time WebSocket server + web UI
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value = "9091")]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 fn main() {
@@ -124,6 +133,9 @@ fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
         },
         Commands::Complete { task_id } => {
             complete_task(project_dir, task_id)
+        },
+        Commands::Serve { port, no_open } => {
+            serve(project_dir, port, no_open)
         },
     }
 }
@@ -546,10 +558,55 @@ fn claim_task(project_dir: PathBuf, task_id: String, agent: String) -> Result<()
 
 fn complete_task(project_dir: PathBuf, task_id: String) -> Result<()> {
     let mut grotto = Grotto::load(&project_dir)?;
-    
+
     grotto.complete_task(&task_id)?;
-    
+
     println!("🎉 Task '{}' marked as complete", task_id);
-    
+
     Ok(())
+}
+
+fn serve(project_dir: PathBuf, port: u16, no_open: bool) -> Result<()> {
+    let grotto_dir = project_dir.join(".grotto");
+    if !grotto_dir.exists() {
+        eprintln!("No .grotto directory found. Run 'grotto spawn' first.");
+        return Err(grotto_core::GrottoError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No .grotto directory found",
+        )));
+    }
+
+    // Look for web/ directory relative to the project
+    let web_dir = project_dir.join("web");
+    let web_dir = if web_dir.exists() { Some(web_dir) } else { None };
+
+    if !no_open {
+        // Try to open browser after a short delay
+        let url = format!("http://localhost:{}", port);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let _ = Command::new("xdg-open")
+                .arg(&url)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .or_else(|_| {
+                    Command::new("open")
+                        .arg(&url)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                });
+        });
+    }
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+    })?;
+
+    rt.block_on(async {
+        grotto_serve::run_server(grotto_dir, port, web_dir).await.map_err(|e| {
+            grotto_core::GrottoError::Io(e)
+        })
+    })
 }

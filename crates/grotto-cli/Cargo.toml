@@ -9,5 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 grotto-core = { path = "../grotto-core" }
+grotto-serve = { path = "../grotto-serve" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }

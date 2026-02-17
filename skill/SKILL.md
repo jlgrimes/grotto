@@ -85,12 +85,64 @@ grotto kill agent-1    # Kill specific agent
 grotto kill all        # Kill entire session
 ```
 
+## Full Orchestration Workflow
+
+When a user gives you a task suitable for parallelization, follow this exact flow:
+
+### 1. Spawn agents
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+cd /path/to/project
+grotto spawn 3 "task description with clear sub-tasks"
+```
+
+### 2. Start the portal
+```bash
+grotto serve --no-open &
+```
+This starts a WebSocket server on port 9090 that:
+- Watches `.grotto/` for file changes
+- Broadcasts real-time events to connected browsers
+- Serves a pixel art web UI with animated crabs (one per agent)
+
+### 3. Send the user the link
+Send the user `http://<host-ip>:9090` to watch progress in real-time.
+To get your IP: `hostname -I | awk '{print $1}'`
+
+### 4. Monitor
+```bash
+grotto status          # Quick check
+grotto events --follow # Stream events
+grotto log agent-1     # Check specific agent output
+```
+
+You can also check progress by looking at file diffs:
+```bash
+find . -newer .grotto/config.toml -not -path './.git/*' -not -path './target/*' -type f
+git diff --stat
+cat .grotto/events.jsonl
+```
+
+### 5. Report results
+When agents finish (tmux session gone or `grotto wait` returns):
+- Check `git log` for commits
+- Run tests: `cargo test` / `npm test` / etc.
+- Report summary to user
+
+### 6. Clean up
+```bash
+grotto kill all  # if session still alive
+# serve process exits when you kill it
+```
+
 ## Best Practices
 
 - **Spawn 2-4 agents** — more than that and coordination overhead increases
 - **Give clear, parallelizable tasks** — "build auth + API + tests" works; "build one thing sequentially" doesn't
-- **Steer early** — assign specializations right after spawn so agents don't duplicate work
+- **Let agents self-organize** — they'll divide work via `grotto steer` messages to each other
+- **Write a plan doc first** — put a `PLAN.md` or similar in the project dir so agents have a spec to read
 - **Monitor with `grotto status`** — check the task board to see who's doing what
+- **Always start `grotto serve`** — give the user real-time visibility
 - **Kill when done** — always `grotto kill all` after the work is complete
 
 ## Architecture
@@ -98,6 +150,7 @@ grotto kill all        # Kill entire session
 ```
 You (OpenClaw agent / team lead)
   ├── grotto spawn → tmux session with N panes
+  ├── grotto serve → WS server + web UI on :9090
   ├── grotto steer → tmux send-keys to specific pane
   ├── grotto log   → tmux capture-pane output
   └── grotto kill  → graceful shutdown then kill
@@ -105,8 +158,12 @@ You (OpenClaw agent / team lead)
 .grotto/ (file-based coordination)
   ├── config.toml      # Team config
   ├── tasks.md         # Shared task board
-  ├── events.jsonl     # Event log
-  └── agents/          # Per-agent status
+  ├── events.jsonl     # Event log (watched by serve)
+  └── agents/          # Per-agent status (watched by serve)
+        ↓
+  grotto serve (file watcher + WS broadcast)
+        ↓
+  Browser → pixel art crabs working in real-time
 ```
 
 All state is file-based. All process management is tmux. No abstractions, no magic.
