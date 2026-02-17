@@ -259,13 +259,12 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(startup_check_delay_ms()));
-    if !tmux_session_exists("grotto") {
+    if !tmux_session_survived_startup_window("grotto") {
         let startup_output = startup_output_chunks.join("\n");
         handle_startup_failure(&project_dir, &grotto, &startup_output)?;
         return Err(grotto_core::GrottoError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "Agent startup failed: tmux session exited immediately",
+            "Agent startup failed: tmux session exited during startup window",
         )));
     }
 
@@ -291,11 +290,34 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
     Ok(())
 }
 
-fn startup_check_delay_ms() -> u64 {
+fn startup_check_window_ms() -> u64 {
     env::var("GROTTO_STARTUP_CHECK_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(1500)
+        .unwrap_or(5000)
+}
+
+fn startup_check_poll_interval_ms() -> u64 {
+    env::var("GROTTO_STARTUP_CHECK_POLL_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(250)
+}
+
+fn tmux_session_survived_startup_window(session_name: &str) -> bool {
+    let window = startup_check_window_ms();
+    let poll = startup_check_poll_interval_ms().max(50);
+    let mut elapsed = 0;
+
+    while elapsed <= window {
+        if !tmux_session_exists(session_name) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll));
+        elapsed += poll;
+    }
+
+    true
 }
 
 fn tmux_session_exists(session_name: &str) -> bool {
