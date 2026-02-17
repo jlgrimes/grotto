@@ -1,0 +1,13 @@
+[package]
+name = "grotto"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "grotto"
+path = "src/main.rs"
+
+[dependencies]
+grotto-core = { path = "../grotto-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
