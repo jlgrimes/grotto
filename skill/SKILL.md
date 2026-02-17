@@ -67,6 +67,17 @@ grotto complete <task-id>                     # Mark done
 grotto steer <other-agent> "message"          # Message peers
 ```
 
+## Waiting for Completion
+
+```bash
+# Block until all agents finish, then get a summary
+grotto wait
+```
+
+This polls the tmux session and prints a summary when all agents exit — duration, task board status, event counts. Also writes `.grotto/summary.md`.
+
+**Use this after spawning agents** so you get notified when they're done instead of manually checking.
+
 ## Killing Agents
 
 ```bash

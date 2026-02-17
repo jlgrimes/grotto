@@ -65,6 +65,12 @@ enum Commands {
         #[arg(long)]
         agent: String,
     },
+    /// Wait for all agents to finish, then print summary
+    Wait {
+        /// Poll interval in seconds
+        #[arg(long, default_value = "5")]
+        interval: u64,
+    },
     /// Mark a task as complete
     Complete {
         /// Task ID to complete
@@ -100,6 +106,9 @@ fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
         },
         Commands::Broadcast { message } => {
             broadcast_message(project_dir, message)
+        },
+        Commands::Wait { interval } => {
+            wait_for_completion(project_dir, interval)
         },
         Commands::Kill { target } => {
             kill_target(project_dir, target)
@@ -441,6 +450,86 @@ fn show_events(project_dir: PathBuf, follow: bool) -> Result<()> {
         let content = fs::read_to_string(events_path)?;
         print!("{}", content);
     }
+    
+    Ok(())
+}
+
+fn wait_for_completion(project_dir: PathBuf, interval: u64) -> Result<()> {
+    println!("⏳ Waiting for grotto agents to finish...");
+    
+    let start = std::time::Instant::now();
+    
+    loop {
+        // Check if tmux session still exists
+        let session_alive = Command::new("tmux")
+            .args(["has-session", "-t", "grotto"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        
+        if !session_alive {
+            break;
+        }
+        
+        let elapsed = start.elapsed().as_secs();
+        let mins = elapsed / 60;
+        let secs = elapsed % 60;
+        eprint!("\r⏳ Agents working... ({mins}m {secs}s)   ");
+        
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
+    
+    let elapsed = start.elapsed();
+    let mins = elapsed.as_secs() / 60;
+    let secs = elapsed.as_secs() % 60;
+    
+    eprintln!();
+    println!("\n🪸 Grotto Complete ({mins}m {secs}s)");
+    println!("{}", "=".repeat(50));
+    
+    // Load final state
+    if let Ok(grotto) = Grotto::load(&project_dir) {
+        println!("📋 Task: {}", grotto.config.task);
+        println!("🤖 Agents: {}\n", grotto.config.agent_count);
+        
+        // Show task board
+        let task_board_path = grotto.grotto_dir.join("tasks.md");
+        if task_board_path.exists() {
+            if let Ok(content) = fs::read_to_string(&task_board_path) {
+                println!("{}", content);
+            }
+        }
+        
+        // Show event summary
+        let events_path = grotto.grotto_dir.join("events.jsonl");
+        if events_path.exists() {
+            if let Ok(content) = fs::read_to_string(&events_path) {
+                let event_count = content.lines().count();
+                let claims: Vec<&str> = content.lines()
+                    .filter(|l| l.contains("task_claimed"))
+                    .collect();
+                let completions: Vec<&str> = content.lines()
+                    .filter(|l| l.contains("task_completed"))
+                    .collect();
+                
+                println!("📡 Events: {} total ({} claims, {} completions)",
+                    event_count, claims.len(), completions.len());
+            }
+        }
+    }
+    
+    // Write a summary file for the lead to consume
+    let summary_path = project_dir.join(".grotto").join("summary.md");
+    let summary = format!(
+        "# Grotto Run Summary\n\n\
+         - Duration: {mins}m {secs}s\n\
+         - Status: All agents exited\n\
+         - See `events.jsonl` for full event log\n\
+         - See `tasks.md` for final task board\n"
+    );
+    let _ = fs::write(&summary_path, &summary);
+    
+    println!("\n✅ Summary written to .grotto/summary.md");
     
     Ok(())
 }
