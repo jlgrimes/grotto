@@ -1,15 +1,45 @@
 # Grotto 🪸
 
-Multi-agent orchestration CLI in Rust. Spawns and coordinates multiple Claude Code sessions working in parallel using tmux for process management.
+**Multi-agent orchestration for [OpenClaw](https://github.com/openclaw/openclaw).** Spawn a team of Claude Code agents in tmux to work on tasks in parallel — coordinated by your OpenClaw agent as team lead.
 
-## Architecture
+## What is this?
 
-**Simple and Direct**: No abstractions, no pluggable spawners, no complex traits. Just tmux + `claude` CLI.
+OpenClaw gives your AI agent persistence, memory, and tools. Grotto gives it a **team**. Your OpenClaw agent (the "lead") can spawn multiple Claude Code sessions that work simultaneously on different parts of a problem, communicate with each other, and coordinate via a shared task board.
 
-- **One tmux session** called "grotto" with each agent as a separate pane
-- **File-based coordination** via `.grotto/` directory for task board and messaging  
-- **Direct CLI commands** for spawning, steering, and monitoring agents
-- **Event logging** via JSON lines for debugging and UI integration
+Think of it as your AI's ability to delegate work to junior agents and manage them like a tech lead.
+
+## How it works
+
+```
+┌─────────────────────────────────────────────┐
+│  OpenClaw Agent (Team Lead)                 │
+│  - Decides what to build                    │
+│  - Spawns grotto agents                     │
+│  - Steers and monitors progress             │
+│  - Reviews output                           │
+└──────────┬──────────┬──────────┬────────────┘
+           │          │          │
+     ┌─────▼──┐ ┌─────▼──┐ ┌────▼───┐
+     │Agent 1 │ │Agent 2 │ │Agent 3 │  ← Claude Code in tmux panes
+     │(auth)  │ │(API)   │ │(tests) │
+     └────────┘ └────────┘ └────────┘
+           │          │          │
+           └──────────┼──────────┘
+                      │
+              .grotto/ (shared state)
+              ├── tasks.md
+              ├── events.jsonl
+              └── agents/
+```
+
+- **One tmux session** with tiled panes — one per agent
+- **File-based coordination** via `.grotto/` directory (task board, events, messages)
+- **Agents can talk to each other** using grotto CLI commands
+- **Lead steers via tmux** send-keys — no fire-and-forget, fully interactive
+
+## Why not OpenClaw sub-agents?
+
+OpenClaw's built-in `sessions_spawn` is fire-and-forget: you send a task, get a result back. You can't have a conversation mid-task, and steering restarts the agent. Grotto agents are **interactive** — the lead (or human) can steer, redirect, and collaborate with them in real-time via tmux.
 
 ## Installation
 
@@ -17,155 +47,85 @@ Multi-agent orchestration CLI in Rust. Spawns and coordinates multiple Claude Co
 cargo install --path crates/grotto-cli
 ```
 
-## Quick Start
+## Usage
+
+Your OpenClaw agent uses grotto as a tool. In practice, the lead agent runs these commands via `exec`:
 
 ```bash
 # Spawn 3 agents to work on a task
 grotto spawn 3 "Build a web API with authentication"
 
-# Attach to see all agents side-by-side
+# Watch them work (attaches to tmux)
 grotto view
 
-# Check status and task board
+# Check the task board
 grotto status
 
-# Send message to specific agent
-grotto steer agent-1 "Focus on the user registration endpoint first"
+# Steer a specific agent
+grotto steer agent-1 "Focus on user registration first"
 
-# Send message to all agents  
-grotto broadcast "Code review: please check each other's work"
+# Broadcast to all agents
+grotto broadcast "Run tests before marking anything complete"
 
-# View agent output
+# View an agent's terminal output
 grotto log agent-2
 
-# Kill specific agent or entire session
-grotto kill agent-1
+# Kill when done
 grotto kill all
 ```
 
-## How It Works
+### Agent self-coordination
 
-### 1. Spawn Flow
+Agents aren't just workers — they coordinate with each other:
 
-When you run `grotto spawn N "task"`:
-
-1. Creates `.grotto/` directory with config, task board, event log
-2. `tmux new-session -d -s grotto` (creates the session)
-3. First agent gets the initial pane  
-4. Additional agents: `tmux split-window -t grotto` for each
-5. `tmux select-layout -t grotto tiled` to arrange them evenly
-6. Each pane runs `claude --dangerously-skip-permissions -p "..."` with task instructions
-
-### 2. Agent Instructions
-
-Each Claude Code session receives a prompt explaining:
-- Its role as agent-N in pane N of the "grotto" session
-- The main task and project directory
-- Available `grotto` CLI commands for coordination
-- Protocol for claiming tasks, communicating, and reporting progress
-
-### 3. Coordination Commands
-
-Agents can use these commands themselves:
-- `grotto status` - See task board and peer states
-- `grotto claim <task-id> --agent <agent-id>` - Claim a task
-- `grotto complete <task-id>` - Mark task done  
-- `grotto steer <other-agent> "message"` - Message a peer
-
-### 4. Human Steering
-
-The human (or lead agent) can:
-- `grotto steer <agent> "message"` → `tmux send-keys -t grotto:0.N`
-- `grotto broadcast "message"` → sends to all panes
-- `grotto view` → `tmux attach -t grotto` to watch all agents
-- `grotto log <agent>` → `tmux capture-pane -t grotto:0.N -p`
-
-## .grotto/ Directory Structure
-
-Created automatically in your project:
-
-```
-.grotto/
-├── config.toml         # Team config (agent count, task description)  
-├── tasks.md            # Shared task board (claimed/done/blocked)
-├── events.jsonl        # Append-only event log
-├── agents/
-│   ├── agent-1/
-│   │   └── status.json # Agent state and progress
-│   └── agent-2/
-│       └── status.json
-└── messages/           # Future: inter-agent message files
-```
-
-## Commands Reference
-
-### Core Commands
-
-- `grotto spawn <N> "<task>"` - Spawn N agents in tmux session
-- `grotto view` - Attach to tmux session to see all agents
-- `grotto status` - Show task board and agent states  
-
-### Communication
-
-- `grotto steer <agent> "<message>"` - Send message to specific agent
-- `grotto broadcast "<message>"` - Send message to all agents
-- `grotto log <agent>` - Show agent's terminal output
-
-### Task Management  
-
-- `grotto claim <task-id> --agent <agent-id>` - Claim a task
-- `grotto complete <task-id>` - Mark task as complete
-
-### Process Management
-
-- `grotto kill <agent>` - Kill specific agent (graceful then force)
-- `grotto kill all` - Kill entire grotto session
-- `grotto events [--follow]` - Show/follow event stream
-
-## Examples
-
-### Backend API Development
 ```bash
-grotto spawn 3 "Build REST API with user auth, posts CRUD, and rate limiting"
+# An agent checks what needs doing
+grotto status
 
-# Agent specialization via steering
-grotto steer agent-1 "You handle authentication and user management"  
-grotto steer agent-2 "You handle the posts API and database schema"
-grotto steer agent-3 "You handle rate limiting, middleware, and testing"
+# Claims a task
+grotto claim auth --agent agent-1
+
+# Marks it done
+grotto complete auth
+
+# Messages a peer
+grotto steer agent-2 "I changed the User schema, update your imports"
 ```
 
-### Frontend Development  
+## OpenClaw Skill
+
+Install as an OpenClaw skill so your agent knows how to use grotto:
+
 ```bash
-grotto spawn 2 "Build React dashboard with charts and real-time updates"
-
-grotto steer agent-1 "Focus on the UI components and styling"
-grotto steer agent-2 "Handle WebSocket integration and state management"
+# Copy the skill to your OpenClaw workspace
+cp -r skill/ ~/.openclaw/workspace/skills/grotto/
 ```
 
-### Bug Investigation
-```bash  
-grotto spawn 4 "Debug performance issue: API responses taking 2+ seconds"
+Or reference it in your agent's `TOOLS.md`.
 
-grotto broadcast "Start by profiling different parts of the system"
-grotto steer agent-1 "Profile the database queries"
-grotto steer agent-2 "Check network and connection pooling"  
-grotto steer agent-3 "Profile the application code"
-grotto steer agent-4 "Monitor system resources during load"
-```
+## Commands
 
-## Implementation Notes
+| Command | Description |
+|---------|-------------|
+| `grotto spawn <N> "<task>"` | Spawn N Claude Code agents in tmux |
+| `grotto view` | Attach to tmux session |
+| `grotto status` | Show task board and agent states |
+| `grotto steer <agent> "<msg>"` | Send message to specific agent |
+| `grotto broadcast "<msg>"` | Message all agents |
+| `grotto log <agent>` | Show agent's terminal output |
+| `grotto claim <task> --agent <id>` | Claim a task |
+| `grotto complete <task>` | Mark task done |
+| `grotto kill <agent>` | Kill specific agent |
+| `grotto kill all` | Kill entire session |
+| `grotto events [--follow]` | Show/follow event stream |
 
-- **tmux session**: All agents in one session called "grotto", tiled layout
-- **pane targeting**: `grotto:0.N` where N is the pane index (0-based)
-- **graceful shutdown**: `/exit` sent to Claude Code, then `tmux kill-pane`
-- **cross-platform**: Unix/Linux focused (tmux dependency)
+## Requirements
 
-## No Abstractions
+- [OpenClaw](https://github.com/openclaw/openclaw) (your AI agent runtime)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (`claude`)
+- [tmux](https://github.com/tmux/tmux)
+- Rust toolchain (to build)
 
-This refactor removed all pluggable spawner abstractions. It's just:
-- Rust CLI that calls tmux commands directly  
-- File-based state management
-- Direct process communication via tmux send-keys
-- Simple, debuggable, no magic
+## License
 
-The goal: **maximum simplicity** for **maximum reliability**.
+MIT
