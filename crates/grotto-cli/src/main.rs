@@ -120,6 +120,22 @@ fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
 }
 
 fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> {
+    // Check dependencies before doing anything
+    if let Err(missing) = Grotto::check_dependencies() {
+        eprintln!("❌ Missing required dependencies: {}", missing.join(", "));
+        for bin in &missing {
+            match bin.as_str() {
+                "tmux" => eprintln!("   Install tmux: sudo apt install tmux (Debian/Ubuntu) or brew install tmux (macOS)"),
+                "claude" => eprintln!("   Install Claude Code: npm install -g @anthropic-ai/claude-code"),
+                _ => {}
+            }
+        }
+        return Err(grotto_core::GrottoError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Missing dependencies: {}", missing.join(", "))
+        )));
+    }
+
     // Kill any existing grotto session
     let _ = Command::new("tmux")
         .args(["kill-session", "-t", "grotto"])

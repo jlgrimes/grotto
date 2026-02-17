@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::process::{Command, Stdio};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -68,6 +69,7 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
+#[derive(Debug)]
 pub struct Grotto {
     pub grotto_dir: PathBuf,
     pub config: Config,
@@ -343,6 +345,37 @@ impl Grotto {
         Ok(())
     }
     
+    /// Check if required external dependencies are available
+    pub fn check_dependencies() -> std::result::Result<(), Vec<String>> {
+        let mut missing = Vec::new();
+        
+        for bin in &["tmux", "claude"] {
+            if Command::new("which")
+                .arg(bin)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| !s.success())
+                .unwrap_or(true)
+            {
+                missing.push(bin.to_string());
+            }
+        }
+        
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing)
+        }
+    }
+    
+    /// Get the pane index for an agent, validating it exists
+    pub fn get_agent_pane(&self, agent_id: &str) -> Result<usize> {
+        self.agents.get(agent_id)
+            .map(|a| a.pane_index)
+            .ok_or_else(|| GrottoError::AgentNotFound(agent_id.to_string()))
+    }
+
     pub fn generate_claude_prompt(&self, agent_id: &str) -> String {
         let agent = self.agents.get(agent_id).unwrap();
         
@@ -383,5 +416,340 @@ Start by checking `grotto status` to see the current state, then claim an availa
             project_dir = self.config.project_dir.display(),
             pane_index = agent.pane_index,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
+    }
+
+    // === Initialization ===
+
+    #[test]
+    fn new_creates_grotto_directory_structure() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 2, "test task".into()).unwrap();
+
+        assert!(dir.join(".grotto").exists());
+        assert!(dir.join(".grotto/agents").exists());
+        assert!(dir.join(".grotto/messages").exists());
+        assert!(dir.join(".grotto/config.toml").exists());
+        assert!(dir.join(".grotto/tasks.md").exists());
+        assert!(dir.join(".grotto/events.jsonl").exists());
+        assert!(dir.join(".grotto/agents/agent-1/status.json").exists());
+        assert!(dir.join(".grotto/agents/agent-2/status.json").exists());
+        assert_eq!(grotto.agents.len(), 2);
+        assert_eq!(grotto.tasks.len(), 1);
+    }
+
+    #[test]
+    fn new_creates_correct_agent_count() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 5, "big task".into()).unwrap();
+        assert_eq!(grotto.agents.len(), 5);
+        for i in 1..=5 {
+            let id = format!("agent-{}", i);
+            assert!(grotto.agents.contains_key(&id));
+            assert_eq!(grotto.agents[&id].pane_index, i - 1);
+        }
+    }
+
+    #[test]
+    fn new_with_zero_agents() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 0, "empty".into()).unwrap();
+        assert_eq!(grotto.agents.len(), 0);
+    }
+
+    #[test]
+    fn new_writes_config_toml() {
+        let (_tmp, dir) = setup();
+        Grotto::new(&dir, 2, "my task".into()).unwrap();
+
+        let config_str = fs::read_to_string(dir.join(".grotto/config.toml")).unwrap();
+        assert!(config_str.contains("my task"));
+        assert!(config_str.contains("agent_count = 2"));
+    }
+
+    #[test]
+    fn new_writes_initial_event() {
+        let (_tmp, dir) = setup();
+        Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let events = fs::read_to_string(dir.join(".grotto/events.jsonl")).unwrap();
+        assert!(events.contains("team_spawned"));
+    }
+
+    // === Loading ===
+
+    #[test]
+    fn load_from_existing_grotto() {
+        let (_tmp, dir) = setup();
+        Grotto::new(&dir, 3, "reload test".into()).unwrap();
+
+        let loaded = Grotto::load(&dir).unwrap();
+        assert_eq!(loaded.config.agent_count, 3);
+        assert_eq!(loaded.config.task, "reload test");
+        assert_eq!(loaded.agents.len(), 3);
+    }
+
+    #[test]
+    fn load_fails_without_grotto_dir() {
+        let (_tmp, dir) = setup();
+        let result = Grotto::load(&dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("No .grotto directory found"), "got: {}", err);
+    }
+
+    #[test]
+    fn load_fails_with_nonexistent_dir() {
+        let result = Grotto::load("/tmp/grotto-does-not-exist-98765");
+        assert!(result.is_err());
+    }
+
+    // === Task claiming ===
+
+    #[test]
+    fn claim_task_success() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 2, "test".into()).unwrap();
+
+        grotto.claim_task("main", "agent-1").unwrap();
+
+        let task = &grotto.tasks[0];
+        assert!(matches!(task.status, TaskStatus::Claimed));
+        assert_eq!(task.claimed_by, Some("agent-1".to_string()));
+
+        let agent = &grotto.agents["agent-1"];
+        assert_eq!(agent.state, "working");
+        assert_eq!(agent.current_task, Some("main".to_string()));
+    }
+
+    #[test]
+    fn claim_task_nonexistent_agent() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let result = grotto.claim_task("main", "agent-99");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Agent not found: agent-99"), "got: {}", err);
+    }
+
+    #[test]
+    fn claim_task_nonexistent_task() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let result = grotto.claim_task("nonexistent", "agent-1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Task not found: nonexistent"), "got: {}", err);
+    }
+
+    #[test]
+    fn claim_task_updates_status_file() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        grotto.claim_task("main", "agent-1").unwrap();
+
+        let status_str = fs::read_to_string(dir.join(".grotto/agents/agent-1/status.json")).unwrap();
+        let agent: AgentState = serde_json::from_str(&status_str).unwrap();
+        assert_eq!(agent.state, "working");
+        assert_eq!(agent.current_task, Some("main".to_string()));
+    }
+
+    #[test]
+    fn claim_task_logs_event() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        grotto.claim_task("main", "agent-1").unwrap();
+
+        let events = fs::read_to_string(dir.join(".grotto/events.jsonl")).unwrap();
+        assert!(events.contains("task_claimed"));
+    }
+
+    // === Task completion ===
+
+    #[test]
+    fn complete_task_success() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        grotto.claim_task("main", "agent-1").unwrap();
+        grotto.complete_task("main").unwrap();
+
+        let task = &grotto.tasks[0];
+        assert!(matches!(task.status, TaskStatus::Completed));
+        assert!(task.completed_at.is_some());
+
+        let agent = &grotto.agents["agent-1"];
+        assert_eq!(agent.state, "idle");
+        assert_eq!(agent.current_task, None);
+    }
+
+    #[test]
+    fn complete_task_nonexistent() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let result = grotto.complete_task("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Task not found"));
+    }
+
+    #[test]
+    fn complete_unclaimed_task() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        // Complete without claiming — should still work
+        grotto.complete_task("main").unwrap();
+        assert!(matches!(grotto.tasks[0].status, TaskStatus::Completed));
+    }
+
+    // === Agent status ===
+
+    #[test]
+    fn write_agent_status_nonexistent() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let result = grotto.write_agent_status("agent-99");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Agent not found"));
+    }
+
+    #[test]
+    fn get_agent_pane_success() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 3, "test".into()).unwrap();
+
+        assert_eq!(grotto.get_agent_pane("agent-1").unwrap(), 0);
+        assert_eq!(grotto.get_agent_pane("agent-2").unwrap(), 1);
+        assert_eq!(grotto.get_agent_pane("agent-3").unwrap(), 2);
+    }
+
+    #[test]
+    fn get_agent_pane_nonexistent() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        let result = grotto.get_agent_pane("agent-99");
+        assert!(result.is_err());
+    }
+
+    // === Event logging ===
+
+    #[test]
+    fn log_event_appends() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 1, "test".into()).unwrap();
+
+        grotto.log_event("custom", Some("agent-1"), None, Some("hello"), serde_json::json!({})).unwrap();
+        grotto.log_event("custom2", None, Some("task-1"), None, serde_json::json!({"key": "val"})).unwrap();
+
+        let events = fs::read_to_string(dir.join(".grotto/events.jsonl")).unwrap();
+        let lines: Vec<&str> = events.lines().collect();
+        // 1 from new() + 2 manual = 3
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].contains("custom"));
+        assert!(lines[2].contains("custom2"));
+    }
+
+    // === Task board ===
+
+    #[test]
+    fn task_board_reflects_status_changes() {
+        let (_tmp, dir) = setup();
+        let mut grotto = Grotto::new(&dir, 1, "build something".into()).unwrap();
+
+        let board = fs::read_to_string(dir.join(".grotto/tasks.md")).unwrap();
+        assert!(board.contains("⭕")); // Open
+
+        grotto.claim_task("main", "agent-1").unwrap();
+        let board = fs::read_to_string(dir.join(".grotto/tasks.md")).unwrap();
+        assert!(board.contains("🟡")); // Claimed
+        assert!(board.contains("agent-1"));
+
+        grotto.complete_task("main").unwrap();
+        let board = fs::read_to_string(dir.join(".grotto/tasks.md")).unwrap();
+        assert!(board.contains("✅")); // Completed
+    }
+
+    // === Prompt generation ===
+
+    #[test]
+    fn generate_prompt_contains_task_and_agent_info() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 2, "build a web API".into()).unwrap();
+
+        let prompt = grotto.generate_claude_prompt("agent-1");
+        assert!(prompt.contains("agent-1"));
+        assert!(prompt.contains("build a web API"));
+        assert!(prompt.contains("pane 0"));
+        assert!(prompt.contains("grotto status"));
+        assert!(prompt.contains("grotto claim"));
+
+        let prompt2 = grotto.generate_claude_prompt("agent-2");
+        assert!(prompt2.contains("agent-2"));
+        assert!(prompt2.contains("pane 1"));
+    }
+
+    // === Dependency checking ===
+
+    #[test]
+    fn check_dependencies_runs() {
+        // Just verify it doesn't panic — actual result depends on environment
+        let result = Grotto::check_dependencies();
+        match result {
+            Ok(()) => {} // tmux + claude both found
+            Err(missing) => {
+                assert!(!missing.is_empty());
+                for bin in &missing {
+                    assert!(bin == "tmux" || bin == "claude");
+                }
+            }
+        }
+    }
+
+    // === Edge cases ===
+
+    #[test]
+    fn reinitialize_overwrites_existing() {
+        let (_tmp, dir) = setup();
+        Grotto::new(&dir, 1, "first".into()).unwrap();
+        let grotto = Grotto::new(&dir, 3, "second".into()).unwrap();
+        
+        assert_eq!(grotto.agents.len(), 3);
+        assert_eq!(grotto.config.task, "second");
+    }
+
+    #[test]
+    fn agent_states_serialize_roundtrip() {
+        let agent = AgentState {
+            id: "agent-1".into(),
+            pane_index: 0,
+            state: "working".into(),
+            current_task: Some("main".into()),
+            progress: "doing stuff".into(),
+            last_update: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: AgentState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "agent-1");
+        assert_eq!(back.state, "working");
+        assert_eq!(back.current_task, Some("main".into()));
     }
 }
