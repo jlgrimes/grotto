@@ -17,6 +17,7 @@
   let crabSprites = {};
   let ws = null;
   let reconnectTimer = null;
+  let sessionCompleted = false;
 
   // --- Load sprite textures ---
   const SPRITE_PATHS = {
@@ -398,6 +399,7 @@
 
   // --- WebSocket ---
   function connectWS() {
+    if (sessionCompleted) return;
     setConnectionStatus('connecting');
 
     try {
@@ -419,12 +421,23 @@
       handleEvent(data);
     };
 
-    ws.onclose = () => { setConnectionStatus('disconnected'); scheduleReconnect(); };
-    ws.onerror = () => { setConnectionStatus('disconnected'); };
+    ws.onclose = () => {
+      if (sessionCompleted) {
+        setConnectionStatus('completed');
+        return;
+      }
+      setConnectionStatus('disconnected');
+      scheduleReconnect();
+    };
+    ws.onerror = () => {
+      if (!sessionCompleted) {
+        setConnectionStatus('disconnected');
+      }
+    };
   }
 
   function scheduleReconnect() {
-    if (reconnectTimer) return;
+    if (sessionCompleted || reconnectTimer) return;
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWS(); }, 3000);
   }
 
@@ -432,6 +445,27 @@
     const el = document.getElementById('connection-status');
     el.textContent = state;
     el.className = state;
+  }
+
+  function setSessionCompleted(reason) {
+    sessionCompleted = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
+
+    setConnectionStatus('completed');
+
+    const banner = document.getElementById('session-completed-banner');
+    if (banner) {
+      banner.classList.remove('hidden');
+      if (reason) {
+        banner.textContent = `Session completed — ${reason}`;
+      }
+    }
   }
 
   // --- Event Handling ---
@@ -443,6 +477,9 @@
         if (event.config) {
           config = event.config;
           document.getElementById('task-label').textContent = config.task || '';
+        }
+        if (event.session_active === false || event.session_status === 'completed') {
+          setSessionCompleted('tmux session ended');
         }
         syncCrabs();
         renderTaskBoard();
@@ -491,6 +528,11 @@
 
       case 'team:spawned':
       case 'agent:summary':
+        addLogEntry(event);
+        break;
+
+      case 'session:completed':
+        setSessionCompleted((event.data && event.data.reason) || 'session finished');
         addLogEntry(event);
         break;
 

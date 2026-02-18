@@ -46,6 +46,10 @@ pub struct WsEvent {
     pub tasks: Option<Vec<TaskInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +65,23 @@ pub struct ConfigInfo {
     pub agent_count: usize,
     pub task: String,
     pub project_dir: String,
+}
+
+fn detect_session_liveness(session_id: &str, agent_count: usize) -> (bool, String) {
+    let snapshots = monitor::capture_all_agents(session_id, agent_count);
+    if snapshots.is_empty() {
+        return (false, "completed".to_string());
+    }
+
+    let all_finished = snapshots
+        .iter()
+        .all(|s| s.phase == AgentPhase::Finished && s.raw_content.is_empty());
+
+    if all_finished {
+        (false, "completed".to_string())
+    } else {
+        (true, "live".to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +190,20 @@ impl DaemonState {
 
                 // Enrich agents with live tmux phase data
                 let mut agents = g.agents;
+                let mut session_active = Some(false);
+                let mut session_status = Some("completed".to_string());
+
                 if let Some(session_id) = &g.config.session_id {
-                    let snapshots =
-                        monitor::capture_all_agents(session_id, g.config.agent_count);
-                    for snap in snapshots {
+                    let snapshots = monitor::capture_all_agents(session_id, g.config.agent_count);
+                    for snap in &snapshots {
                         if let Some(agent) = agents.get_mut(&snap.agent_id) {
                             agent.phase = Some(snap.phase.to_string());
                         }
                     }
+
+                    let (active, status) = detect_session_liveness(session_id, g.config.agent_count);
+                    session_active = Some(active);
+                    session_status = Some(status);
                 }
 
                 WsEvent {
@@ -193,6 +220,8 @@ impl DaemonState {
                         task: g.config.task.clone(),
                         project_dir: g.config.project_dir.display().to_string(),
                     }),
+                    session_active,
+                    session_status,
                 }
             }
             Err(_) => WsEvent {
@@ -205,6 +234,8 @@ impl DaemonState {
                 agents: Some(HashMap::new()),
                 tasks: Some(Vec::new()),
                 config: None,
+                session_active: Some(false),
+                session_status: Some("not_found".to_string()),
             },
         }
     }
@@ -757,6 +788,29 @@ async fn run_tmux_monitor(
         if all_finished {
             consecutive_failures += 1;
             if consecutive_failures > 5 {
+                let now = chrono::Utc::now();
+                let ws_event = WsEvent {
+                    event_type: "session:completed".to_string(),
+                    timestamp: now.to_rfc3339(),
+                    agent_id: None,
+                    task_id: None,
+                    message: Some("Session completed (tmux session ended)".to_string()),
+                    data: Some(serde_json::json!({
+                        "reason": "tmux_session_ended",
+                        "completed_at": now.to_rfc3339(),
+                        "session_id": session_id,
+                    })),
+                    agents: None,
+                    tasks: None,
+                    config: None,
+                    session_active: Some(false),
+                    session_status: Some("completed".to_string()),
+                };
+
+                if let Ok(json) = serde_json::to_string(&ws_event) {
+                    let _ = tx.send(json);
+                }
+
                 // Session is gone, stop polling
                 break;
             }
@@ -789,6 +843,8 @@ async fn run_tmux_monitor(
                     agents: None,
                     tasks: None,
                     config: None,
+                    session_active: None,
+                    session_status: None,
                 };
 
                 if let Ok(json) = serde_json::to_string(&ws_event) {
@@ -857,6 +913,8 @@ async fn run_file_watcher(
                                         agents: None,
                                         tasks: None,
                                         config: None,
+                                        session_active: None,
+                                        session_status: None,
                                     };
                                     if let Ok(json) = serde_json::to_string(&ws_event) {
                                         let _ = tx.send(json);
@@ -882,6 +940,8 @@ async fn run_file_watcher(
                                             agents: None,
                                             tasks: None,
                                             config: None,
+                                            session_active: None,
+                                            session_status: None,
                                         };
                                         if let Ok(json) = serde_json::to_string(&ws_event) {
                                             let _ = tx.send(json);
@@ -900,6 +960,8 @@ async fn run_file_watcher(
                                     agents: None,
                                     tasks: Some(tasks),
                                     config: None,
+                                    session_active: None,
+                                    session_status: None,
                                 };
                                 if let Ok(json) = serde_json::to_string(&ws_event) {
                                     let _ = tx.send(json);
@@ -1026,6 +1088,8 @@ mod tests {
             agents: None,
             tasks: None,
             config: None,
+            session_active: None,
+            session_status: None,
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -1033,6 +1097,28 @@ mod tests {
         assert!(json.contains("agent-1"));
         assert!(!json.contains("task_id"));
         assert!(!json.contains("\"data\""));
+    }
+
+    #[test]
+    fn test_session_completed_event_serialization() {
+        let event = WsEvent {
+            event_type: "session:completed".to_string(),
+            timestamp: "2025-01-01T00:00:00Z".to_string(),
+            agent_id: None,
+            task_id: None,
+            message: Some("Session completed (tmux session ended)".to_string()),
+            data: Some(serde_json::json!({"reason": "tmux_session_ended"})),
+            agents: None,
+            tasks: None,
+            config: None,
+            session_active: Some(false),
+            session_status: Some("completed".to_string()),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"session:completed\""));
+        assert!(json.contains("\"session_active\":false"));
+        assert!(json.contains("\"session_status\":\"completed\""));
     }
 
     #[test]
@@ -1053,6 +1139,8 @@ mod tests {
         assert_eq!(agents.len(), 2);
         assert!(snapshot.config.is_some());
         assert_eq!(snapshot.config.unwrap().agent_count, 2);
+        assert!(snapshot.session_active.is_some());
+        assert!(snapshot.session_status.is_some());
     }
 
     #[test]
@@ -1066,6 +1154,8 @@ mod tests {
         let snapshot = state.build_snapshot();
         assert_eq!(snapshot.event_type, "snapshot");
         assert!(snapshot.agents.unwrap().is_empty());
+        assert_eq!(snapshot.session_active, Some(false));
+        assert_eq!(snapshot.session_status, Some("not_found".to_string()));
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ body {
   font-family: 'Courier New', monospace;
   display: grid;
   grid-template-columns: 1fr 280px;
-  grid-template-rows: 40px 1fr 180px;
+  grid-template-rows: 40px auto 1fr 180px;
   height: 100vh;
   overflow: hidden;
 }
@@ -76,6 +76,11 @@ body {
   color: var(--yellow);
 }
 
+#connection-status.completed {
+  background: #1f2a1f;
+  color: var(--green);
+}
+
 #task-label {
   font-size: 12px;
   color: var(--text-dim);
@@ -83,6 +88,20 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+#session-completed-banner {
+  grid-column: 1 / -1;
+  background: #1f2a1f;
+  color: var(--green);
+  border-bottom: 1px solid #2f4a2f;
+  padding: 6px 16px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+}
+
+#session-completed-banner.hidden {
+  display: none;
 }
 
 #stage-container {
