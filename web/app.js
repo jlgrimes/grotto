@@ -385,6 +385,10 @@
   }
 
   // --- Event Log ---
+  function getEventKind(event) {
+    return event?.type || event?.event_type || '';
+  }
+
   function addLogEntry(event) {
     const entries = document.getElementById('log-entries');
     const div = document.createElement('div');
@@ -396,7 +400,7 @@
 
     div.innerHTML =
       `<span class="log-time">${time}</span>` +
-      `<span class="log-type">${esc(event.type || event.event_type || '?')}</span>` +
+      `<span class="log-type">${esc(getEventKind(event) || '?')}</span>` +
       agentPart +
       `<span>${esc(event.message || '')}</span>`;
 
@@ -407,8 +411,9 @@
 
   function normalizeEvent(event) {
     if (!event || typeof event !== 'object') return event;
-    if (!event.type && event.event_type) {
-      event.type = event.event_type;
+    const kind = getEventKind(event);
+    if (kind && !event.type) {
+      event.type = kind;
     }
     return event;
   }
@@ -436,6 +441,50 @@
   }
 
   // --- WebSocket ---
+  function clearReconnectTimer() {
+    if (!reconnectTimer) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  function completeFromHistory(reason) {
+    // Keep fallback behavior centralized so onclose/onerror stay in sync.
+    loadEventHistory();
+    setSessionCompleted(reason || 'websocket unavailable; loaded history');
+  }
+
+  function handleSocketOpen() {
+    wsEverConnected = true;
+    setConnectionStatus('connected');
+    clearReconnectTimer();
+  }
+
+  function handleSocketClose() {
+    if (sessionCompleted) {
+      setConnectionStatus('completed');
+      return;
+    }
+
+    if (!wsEverConnected) {
+      completeFromHistory('websocket unavailable; loaded history');
+      return;
+    }
+
+    setConnectionStatus('disconnected');
+    scheduleReconnect();
+  }
+
+  function handleSocketError() {
+    if (sessionCompleted) return;
+
+    if (!wsEverConnected) {
+      completeFromHistory('websocket unavailable; loaded history');
+      return;
+    }
+
+    setConnectionStatus('disconnected');
+  }
+
   function connectWS() {
     if (!SESSION_ID || sessionCompleted) return;
     setConnectionStatus('connecting');
@@ -444,16 +493,11 @@
       ws = new WebSocket(WS_URL);
     } catch (e) {
       setConnectionStatus('disconnected');
-      loadEventHistory();
-      setSessionCompleted('websocket unavailable; loaded history');
+      completeFromHistory('websocket unavailable; loaded history');
       return;
     }
 
-    ws.onopen = () => {
-      wsEverConnected = true;
-      setConnectionStatus('connected');
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    };
+    ws.onopen = handleSocketOpen;
 
     ws.onmessage = (evt) => {
       let data;
@@ -461,29 +505,8 @@
       handleEvent(normalizeEvent(data));
     };
 
-    ws.onclose = () => {
-      if (sessionCompleted) {
-        setConnectionStatus('completed');
-        return;
-      }
-
-      if (!wsEverConnected) {
-        loadEventHistory();
-        setSessionCompleted('websocket unavailable; loaded history');
-        return;
-      }
-
-      setConnectionStatus('disconnected');
-      scheduleReconnect();
-    };
-    ws.onerror = () => {
-      if (!sessionCompleted && !wsEverConnected) {
-        loadEventHistory();
-        setSessionCompleted('websocket unavailable; loaded history');
-      } else if (!sessionCompleted) {
-        setConnectionStatus('disconnected');
-      }
-    };
+    ws.onclose = handleSocketClose;
+    ws.onerror = handleSocketError;
   }
 
   function scheduleReconnect() {
@@ -497,15 +520,16 @@
     el.className = state;
   }
 
-  function setSessionCompleted(reason) {
-    sessionCompleted = true;
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
+  function closeSocketIfOpen() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close();
     }
+  }
+
+  function setSessionCompleted(reason) {
+    sessionCompleted = true;
+    clearReconnectTimer();
+    closeSocketIfOpen();
 
     setConnectionStatus('completed');
 
@@ -522,8 +546,9 @@
   function handleEvent(event, opts) {
     const options = opts || {};
     event = normalizeEvent(event);
+    const eventKind = getEventKind(event);
 
-    switch (event.type) {
+    switch (eventKind) {
       case 'snapshot':
         if (event.agents) agents = event.agents;
         if (event.tasks) tasks = event.tasks;
@@ -594,8 +619,8 @@
         break;
 
       case 'event:raw':
-        if (event.data && event.data.event_type) {
-          const rawType = event.data.event_type;
+        if (event.data) {
+          const rawType = getEventKind(event.data);
           if (rawType === 'task_claimed' && event.agent_id) {
             const agent = agents[event.agent_id];
             if (agent) { agent.state = 'working'; agent.current_task = event.task_id; syncCrabs(); }
@@ -613,7 +638,7 @@
     }
 
     // Apply some state on historical events too
-    if (options.fromHistory && event.type === 'agent:status' && event.agent_id && event.data) {
+    if (options.fromHistory && eventKind === 'agent:status' && event.agent_id && event.data) {
       agents[event.agent_id] = { ...agents[event.agent_id], ...event.data };
       syncCrabs();
     }
