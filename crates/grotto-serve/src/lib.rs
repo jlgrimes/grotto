@@ -422,6 +422,8 @@ pub struct SessionResponse {
     pub dir: String,
     pub agent_count: Option<usize>,
     pub task: Option<String>,
+    pub status: String,
+    pub last_updated: Option<String>,
 }
 
 /// Run the multi-session daemon server
@@ -493,6 +495,25 @@ pub async fn run_daemon(port: u16, web_dir: Option<PathBuf>) -> std::io::Result<
 // REST API handlers
 // ---------------------------------------------------------------------------
 
+fn read_last_event_timestamp(session_dir: &str) -> Option<String> {
+    let events_path = PathBuf::from(session_dir).join(".grotto").join("events.jsonl");
+    let content = std::fs::read_to_string(&events_path).ok()?;
+    let last_line = content.lines().filter(|line| !line.trim().is_empty()).next_back()?;
+    let value: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    value
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn infer_session_status(entry: &SessionEntry) -> String {
+    if entry.agent_count == 0 {
+        return "completed".to_string();
+    }
+    let (_active, status) = detect_session_liveness(&entry.id, entry.agent_count);
+    status
+}
+
 async fn api_list_sessions(state: Arc<DaemonState>) -> impl IntoResponse {
     state.sync_from_registry().await;
     let registry = SessionRegistry::load();
@@ -504,8 +525,12 @@ async fn api_list_sessions(state: Arc<DaemonState>) -> impl IntoResponse {
             dir: session.dir.clone(),
             agent_count: Some(session.agent_count),
             task: Some(session.task.clone()),
+            status: infer_session_status(session),
+            last_updated: read_last_event_timestamp(&session.dir),
         });
     }
+
+    result.sort_by(|a, b| b.last_updated.cmp(&a.last_updated).then_with(|| a.id.cmp(&b.id)));
 
     Json(result)
 }

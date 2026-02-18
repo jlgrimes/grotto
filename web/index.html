@@ -111,13 +111,17 @@
       text-transform: uppercase;
       letter-spacing: 1px;
     }
-    .session-status.active {
+    .session-status.live {
       background: #1a3a2a;
       color: var(--green);
     }
-    .session-status.inactive {
+    .session-status.completed {
       background: #2a2a2a;
       color: var(--text-dim);
+    }
+    .session-status.unknown {
+      background: #3a3a1a;
+      color: var(--yellow);
     }
     .coral-icon {
       font-size: 28px;
@@ -156,7 +160,7 @@
         if (!sessions || sessions.length === 0) {
           container.innerHTML =
             '<div class="empty-state">' +
-            'No active sessions.<br>' +
+            'No sessions yet.<br>' +
             'Start one with <code>grotto spawn 3 "your task"</code>' +
             '</div>';
           return;
@@ -164,8 +168,12 @@
 
         container.innerHTML = sessions.map(function (s) {
           var agentText = (s.agent_count || 0) + ' agent' + ((s.agent_count || 0) !== 1 ? 's' : '');
-          var statusClass = s.active !== false ? 'active' : 'inactive';
-          var statusText = s.active !== false ? 'active' : 'idle';
+          var status = String(s.status || 'unknown').toLowerCase();
+          var statusClass = status === 'live' ? 'live' : (status === 'completed' ? 'completed' : 'unknown');
+          var statusText = status === 'live' ? 'live' : (status === 'completed' ? 'completed' : status);
+          var updated = s.last_updated
+            ? new Date(s.last_updated).toLocaleString()
+            : 'n/a';
 
           return '<a class="session-card" href="/' + esc(s.id) + '">' +
             '<span class="coral-icon">&#x1F9C0;</span>' +
@@ -175,7 +183,8 @@
             '</div>' +
             '<div class="session-meta">' +
             '<div class="session-agents">' + agentText + '</div>' +
-            '<span class="session-status ' + statusClass + '">' + statusText + '</span>' +
+            '<div>updated: ' + esc(updated) + '</div>' +
+            '<span class="session-status ' + statusClass + '">' + esc(statusText) + '</span>' +
             '</div>' +
             '</a>';
         }).join('');

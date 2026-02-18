@@ -7,6 +7,7 @@
   // --- Constants ---
   const SESSION_ID = location.pathname.replace(/^\//, '').replace(/\/$/, '');
   const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/${SESSION_ID}`;
+  const EVENTS_API_URL = `/api/sessions/${encodeURIComponent(SESSION_ID)}/events`;
   const SAND_Y_RATIO = 0.75;
   const CRAB_SCALE = 0.35; // scale down the DALL-E sprites
 
@@ -18,6 +19,8 @@
   let ws = null;
   let reconnectTimer = null;
   let sessionCompleted = false;
+  let wsEverConnected = false;
+  let historyLoaded = false;
 
   // --- Load sprite textures ---
   const SPRITE_PATHS = {
@@ -348,6 +351,10 @@
   }
 
   // --- Task Board UI ---
+  function normalizeTaskStatus(status) {
+    return String(status || '').toLowerCase();
+  }
+
   function renderTaskBoard() {
     const board = document.getElementById('task-board');
     if (tasks.length === 0) {
@@ -356,19 +363,20 @@
     }
 
     board.innerHTML = tasks.map(t => {
+      const normalized = normalizeTaskStatus(t.status);
       const statusClass =
-        t.status === 'Completed' ? 'completed' :
-        t.status === 'Claimed' || t.status === 'InProgress' ? 'claimed' : 'open';
+        normalized === 'completed' ? 'completed' :
+        normalized === 'claimed' || normalized === 'in_progress' ? 'claimed' : 'open';
       const statusText =
-        t.status === 'Completed' ? 'done' :
-        t.status === 'Claimed' ? 'claimed' :
-        t.status === 'InProgress' ? 'in progress' :
-        t.status === 'Blocked' ? 'blocked' : 'open';
-      const agentLine = t.claimed_by ? `<div class="task-agent">${t.claimed_by}</div>` : '';
+        normalized === 'completed' ? 'done' :
+        normalized === 'claimed' ? 'claimed' :
+        normalized === 'in_progress' ? 'in progress' :
+        normalized === 'blocked' ? 'blocked' : 'open';
+      const agentLine = t.claimed_by ? `<div class="task-agent">${esc(t.claimed_by)}</div>` : '';
       const desc = t.description.length > 100 ? t.description.slice(0, 100) + '...' : t.description;
 
       return `<div class="task-card">
-        <span class="task-id">${t.id}</span>
+        <span class="task-id">${esc(t.id)}</span>
         <span class="task-status ${statusClass}">${statusText}</span>
         <div class="task-desc">${esc(desc)}</div>
         ${agentLine}
@@ -394,23 +402,55 @@
 
     entries.appendChild(div);
     entries.scrollTop = entries.scrollHeight;
-    while (entries.children.length > 200) entries.removeChild(entries.firstChild);
+    while (entries.children.length > 400) entries.removeChild(entries.firstChild);
+  }
+
+  function normalizeEvent(event) {
+    if (!event || typeof event !== 'object') return event;
+    if (!event.type && event.event_type) {
+      event.type = event.event_type;
+    }
+    return event;
+  }
+
+  async function loadEventHistory() {
+    if (historyLoaded || !SESSION_ID) return;
+    historyLoaded = true;
+
+    try {
+      const res = await fetch(EVENTS_API_URL);
+      if (!res.ok) return;
+      const events = await res.json();
+      if (!Array.isArray(events)) return;
+
+      for (const raw of events) {
+        handleEvent(normalizeEvent(raw), { fromHistory: true });
+      }
+
+      if (events.length > 0) {
+        setSessionCompleted('showing historical timeline');
+      }
+    } catch {
+      // no-op: historical data is best effort when WS is unavailable
+    }
   }
 
   // --- WebSocket ---
   function connectWS() {
-    if (sessionCompleted) return;
+    if (!SESSION_ID || sessionCompleted) return;
     setConnectionStatus('connecting');
 
     try {
       ws = new WebSocket(WS_URL);
     } catch (e) {
       setConnectionStatus('disconnected');
-      scheduleReconnect();
+      loadEventHistory();
+      setSessionCompleted('websocket unavailable; loaded history');
       return;
     }
 
     ws.onopen = () => {
+      wsEverConnected = true;
       setConnectionStatus('connected');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     };
@@ -418,7 +458,7 @@
     ws.onmessage = (evt) => {
       let data;
       try { data = JSON.parse(evt.data); } catch { return; }
-      handleEvent(data);
+      handleEvent(normalizeEvent(data));
     };
 
     ws.onclose = () => {
@@ -426,11 +466,21 @@
         setConnectionStatus('completed');
         return;
       }
+
+      if (!wsEverConnected) {
+        loadEventHistory();
+        setSessionCompleted('websocket unavailable; loaded history');
+        return;
+      }
+
       setConnectionStatus('disconnected');
       scheduleReconnect();
     };
     ws.onerror = () => {
-      if (!sessionCompleted) {
+      if (!sessionCompleted && !wsEverConnected) {
+        loadEventHistory();
+        setSessionCompleted('websocket unavailable; loaded history');
+      } else if (!sessionCompleted) {
         setConnectionStatus('disconnected');
       }
     };
@@ -469,7 +519,10 @@
   }
 
   // --- Event Handling ---
-  function handleEvent(event) {
+  function handleEvent(event, opts) {
+    const options = opts || {};
+    event = normalizeEvent(event);
+
     switch (event.type) {
       case 'snapshot':
         if (event.agents) agents = event.agents;
@@ -504,18 +557,20 @@
         break;
 
       case 'task:claimed':
+      case 'task_claimed':
         if (event.task_id) {
           const task = tasks.find(t => t.id === event.task_id);
-          if (task) { task.status = 'Claimed'; task.claimed_by = event.agent_id || null; }
+          if (task) { task.status = 'claimed'; task.claimed_by = event.agent_id || null; }
           renderTaskBoard();
         }
         addLogEntry(event);
         break;
 
       case 'task:completed':
+      case 'task_completed':
         if (event.task_id) {
           const task = tasks.find(t => t.id === event.task_id);
-          if (task) { task.status = 'Completed'; task.completed_at = event.timestamp; }
+          if (task) { task.status = 'completed'; task.completed_at = event.timestamp; }
           renderTaskBoard();
         }
         addLogEntry(event);
@@ -527,7 +582,9 @@
         break;
 
       case 'team:spawned':
+      case 'team_spawned':
       case 'agent:summary':
+      case 'agent_summary':
         addLogEntry(event);
         break;
 
@@ -554,11 +611,17 @@
         addLogEntry(event);
         break;
     }
+
+    // Apply some state on historical events too
+    if (options.fromHistory && event.type === 'agent:status' && event.agent_id && event.data) {
+      agents[event.agent_id] = { ...agents[event.agent_id], ...event.data };
+      syncCrabs();
+    }
   }
 
   function esc(str) {
     const d = document.createElement('div');
-    d.textContent = str;
+    d.textContent = String(str || '');
     return d.innerHTML;
   }
 

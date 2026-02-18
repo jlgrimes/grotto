@@ -352,6 +352,63 @@ async fn test_daemon_register_and_list_sessions() {
     let response = String::from_utf8_lossy(&buf[..n]);
     assert!(response.contains("test-coral-reef"), "Got: {}", response);
     assert!(response.contains("test daemon task"), "Got: {}", response);
+    assert!(response.contains("\"status\""), "Got: {}", response);
+    assert!(response.contains("\"last_updated\""), "Got: {}", response);
+}
+
+#[tokio::test]
+async fn test_daemon_session_events_endpoint_returns_history() {
+    let port = start_daemon_server().await;
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let grotto = Grotto::new(&dir, 1, "history endpoint test".into()).unwrap();
+
+    // Register the session via POST
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let (mut reader, mut writer) = stream.into_split();
+    let body = serde_json::json!({
+        "id": "history-session",
+        "dir": dir.display().to_string()
+    });
+    let body_str = serde_json::to_string(&body).unwrap();
+    let req = format!(
+        "POST /api/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body_str.len(),
+        body_str
+    );
+    writer.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 4096];
+    let _ = reader.read(&mut buf).await.unwrap();
+
+    // Append an event to history
+    grotto
+        .log_event(
+            "history_test",
+            Some("agent-1"),
+            None,
+            Some("historical event"),
+            serde_json::json!({"ok": true}),
+        )
+        .unwrap();
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let (mut reader, mut writer) = stream.into_split();
+    writer
+        .write_all(b"GET /api/sessions/history-session/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 16384];
+    let n = reader.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
+
+    assert!(response.contains("200 OK"), "Got: {}", response);
+    assert!(response.contains("history_test"), "Got: {}", response);
+    assert!(response.contains("historical event"), "Got: {}", response);
 }
 
 #[tokio::test]
