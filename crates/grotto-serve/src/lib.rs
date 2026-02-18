@@ -603,7 +603,19 @@ async fn daemon_fallback(
 
     let segment = path.trim_start_matches('/');
 
-    // Static files — anything with a file extension
+    // Named HTML pages (no extension in URL)
+    let html_pages = ["sandbox", "crab-styles"];
+    for page in &html_pages {
+        if segment == *page {
+            let filename = format!("{}.html", page);
+            return match tokio::fs::read_to_string(web_dir.join(&filename)).await {
+                Ok(html) => Html(html).into_response(),
+                Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("{} not found", filename)).into_response(),
+            };
+        }
+    }
+
+    // Static files — anything with a file extension (supports subdirs)
     if segment.contains('.') {
         let file_path = web_dir.join(segment);
         return match tokio::fs::read(&file_path).await {
