@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod monitor;
 pub mod words;
 
 use chrono::{DateTime, Utc};
@@ -43,6 +44,9 @@ pub struct AgentState {
     pub current_task: Option<String>,
     pub progress: String,
     pub last_update: DateTime<Utc>,
+    /// Real-time phase inferred from tmux pane capture (not persisted to status.json)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +132,7 @@ impl Grotto {
                 current_task: None,
                 progress: "Starting up...".to_string(),
                 last_update: Utc::now(),
+                phase: None,
             };
             // Create agent directory and files
             let agent_dir = grotto_dir.join("agents").join(&agent_id);
@@ -806,6 +811,7 @@ mod tests {
             current_task: Some("main".into()),
             progress: "doing stuff".into(),
             last_update: Utc::now(),
+            phase: None,
         };
 
         let json = serde_json::to_string(&agent).unwrap();

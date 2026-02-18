@@ -6,7 +6,7 @@
 
   // --- Constants ---
   const SESSION_ID = location.pathname.replace(/^\//, '').replace(/\/$/, '');
-  const WS_URL = `ws://${location.host}/ws/${SESSION_ID}`;
+  const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/${SESSION_ID}`;
   const SAND_Y_RATIO = 0.75;
   const CRAB_SCALE = 0.35; // scale down the DALL-E sprites
 
@@ -250,15 +250,21 @@
         }
       }
 
-      // Update status label
+      // Update status label — prefer live phase over file-based state
       const statusLabel = wrapper.children.find(c => c.label === 'statusLabel');
       if (statusLabel && agents[id]) {
         const a = agents[id];
-        statusLabel.text = a.state || '';
+        const display = a.phase || a.state || '';
+        statusLabel.text = display;
         statusLabel.style.fill =
-          a.state === 'working' ? 0xe0c050 :
-          a.state === 'idle' ? 0x8899aa :
-          a.state === 'spawning' ? 0x50c878 :
+          display === 'thinking' ? 0x60a0ff :
+          display === 'editing' ? 0xe0c050 :
+          display === 'running' ? 0xff9050 :
+          display === 'working' ? 0xe0c050 :
+          display === 'error' ? 0xff4040 :
+          display === 'finished' ? 0x50c878 :
+          display === 'idle' ? 0x8899aa :
+          display === 'spawning' || display === 'starting' ? 0x50c878 :
           0x8899aa;
       }
     }
@@ -311,14 +317,26 @@
       if (!wrapper) continue;
 
       const anim = wrapper._anim;
+      // Use live phase if available, fall back to file-based state
+      const phase = agent.phase;
       const newState = agent.state || 'idle';
 
-      if (newState === 'working' && anim.state !== 'working' && anim.state !== 'spawning') {
+      // Phase-driven animation: thinking/editing/running all map to 'working' anim
+      const isActive = phase === 'thinking' || phase === 'editing' || phase === 'running'
+        || newState === 'working';
+      const isFinished = phase === 'finished'
+        || (phase === 'idle' && anim.state === 'working')
+        || (newState === 'idle' && anim.state === 'working');
+      const isError = phase === 'error';
+
+      if (isActive && anim.state !== 'working' && anim.state !== 'spawning') {
         anim.state = 'working';
         anim.frame = 0;
-      } else if (newState === 'idle' && anim.state === 'working') {
+      } else if (isFinished) {
         anim.state = 'completed';
         anim.danceStart = anim.frame;
+      } else if (isError && anim.state !== 'spawning') {
+        anim.state = 'idle'; // Show as idle but status label will show error color
       } else if (newState === 'spawning' && anim.state !== 'spawning') {
         anim.state = 'spawning';
         anim.spawnProgress = 0;
@@ -433,6 +451,16 @@
       case 'agent:status':
         if (event.agent_id && event.data) {
           agents[event.agent_id] = { ...agents[event.agent_id], ...event.data };
+          syncCrabs();
+        }
+        addLogEntry(event);
+        break;
+
+      case 'agent:phase':
+        if (event.agent_id && event.data) {
+          if (!agents[event.agent_id]) agents[event.agent_id] = {};
+          agents[event.agent_id].phase = event.data.phase;
+          agents[event.agent_id].last_activity = event.data.last_activity;
           syncCrabs();
         }
         addLogEntry(event);

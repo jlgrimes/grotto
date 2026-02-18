@@ -2,6 +2,7 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use grotto_core::daemon::{self, SessionEntry, SessionRegistry};
 use grotto_core::{Grotto, Result};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -252,6 +253,22 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
         .args(["select-layout", "-t", "grotto", "tiled"])
         .output();
 
+    // Set up pipe-pane for persistent stream logging per agent
+    for i in 0..count {
+        let agent_id = format!("agent-{}", i + 1);
+        let stream_path = grotto.grotto_dir.join("agents").join(&agent_id).join("stream.log");
+        let pane_target = format!("grotto:0.{}", i);
+        let _ = Command::new("tmux")
+            .args([
+                "pipe-pane",
+                "-o",
+                "-t",
+                &pane_target,
+                &format!("cat >> {}", stream_path.display()),
+            ])
+            .output();
+    }
+
     for pane_index in 0..count {
         if let Some(captured) = capture_tmux_pane(&format!("grotto:0.{}", pane_index)) {
             startup_output_chunks.push(format!("pane {}:\n{}", pane_index, captured));
@@ -463,27 +480,47 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
         println!("📺 Tmux session: grotto (not found)");
     }
 
+    // Capture live tmux state if session is active
+    let live_snapshots = if session_exists {
+        grotto_core::monitor::capture_all_agents("grotto", grotto.config.agent_count)
+    } else {
+        Vec::new()
+    };
+    let live_phases: HashMap<String, &grotto_core::monitor::PaneSnapshot> = live_snapshots
+        .iter()
+        .map(|s| (s.agent_id.clone(), s))
+        .collect();
+
     println!("\n🤖 Agents ({}):", grotto.agents.len());
     for (agent_id, agent) in &grotto.agents {
-        let is_failed = agent.state == "failed"
-            || agent.state == "error"
-            || agent.progress.contains("startup_failed");
-        let display_state = if is_failed {
-            "failed"
+        // Prefer live tmux phase over stale file-based state
+        let (display_state, display_detail) = if let Some(snap) = live_phases.get(agent_id) {
+            (snap.phase.to_string(), snap.last_activity_line.clone())
         } else {
-            agent.state.as_str()
+            let is_failed = agent.state == "failed"
+                || agent.state == "error"
+                || agent.progress.contains("startup_failed");
+            let state = if is_failed { "failed" } else { &agent.state };
+            (state.to_string(), agent.progress.clone())
         };
-        let status_emoji = match display_state {
-            "working" => "🔄",
+
+        let status_emoji = match display_state.as_str() {
+            "thinking" => "🧠",
+            "editing" => "✏️",
+            "running" => "⚡",
             "idle" => "💤",
-            "spawning" => "🚀",
+            "finished" => "✅",
+            "error" => "❌",
+            "starting" => "🚀",
+            "working" => "🔄",
             "failed" => "❌",
+            "spawning" => "🚀",
             _ => "❓",
         };
 
         println!(
             "  {} {} (pane {}) - {} - {}",
-            status_emoji, agent_id, agent.pane_index, display_state, agent.progress
+            status_emoji, agent_id, agent.pane_index, display_state, display_detail
         );
 
         if let Some(task) = &agent.current_task {

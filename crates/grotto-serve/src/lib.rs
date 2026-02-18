@@ -9,6 +9,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use grotto_core::daemon::{self, SessionEntry, SessionRegistry};
+use grotto_core::monitor::{self, AgentPhase};
 use grotto_core::{AgentState, Event, Grotto};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,8 @@ struct LiveSession {
     pub tx: broadcast::Sender<String>,
     /// Dropping this handle stops the watcher task
     _watcher_abort: tokio::task::AbortHandle,
+    /// Dropping this handle stops the tmux monitor task
+    _monitor_abort: Option<tokio::task::AbortHandle>,
 }
 
 /// Shared daemon state
@@ -102,12 +105,15 @@ impl DaemonState {
 
             let (tx, _rx) = broadcast::channel::<String>(256);
             let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
+            let monitor_abort =
+                spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
             sessions.insert(
                 id,
                 LiveSession {
                     entry,
                     tx,
                     _watcher_abort: abort_handle,
+                    _monitor_abort: Some(monitor_abort),
                 },
             );
         }
@@ -134,6 +140,8 @@ impl DaemonState {
             }
             let (tx, _rx) = broadcast::channel::<String>(256);
             let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
+            let monitor_abort =
+                spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
             let mut sessions = state.sessions.write().await;
             sessions.insert(
                 entry.id.clone(),
@@ -141,6 +149,7 @@ impl DaemonState {
                     entry,
                     tx,
                     _watcher_abort: abort_handle,
+                    _monitor_abort: Some(monitor_abort),
                 },
             );
         }
@@ -153,6 +162,19 @@ impl DaemonState {
         match grotto {
             Ok(g) => {
                 let tasks = parse_task_board(&grotto_dir.join("tasks.md"));
+
+                // Enrich agents with live tmux phase data
+                let mut agents = g.agents;
+                if let Some(session_id) = &g.config.session_id {
+                    let snapshots =
+                        monitor::capture_all_agents(session_id, g.config.agent_count);
+                    for snap in snapshots {
+                        if let Some(agent) = agents.get_mut(&snap.agent_id) {
+                            agent.phase = Some(snap.phase.to_string());
+                        }
+                    }
+                }
+
                 WsEvent {
                     event_type: "snapshot".to_string(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -160,7 +182,7 @@ impl DaemonState {
                     task_id: None,
                     message: Some("Full state snapshot".to_string()),
                     data: None,
-                    agents: Some(g.agents),
+                    agents: Some(agents),
                     tasks: Some(tasks),
                     config: Some(ConfigInfo {
                         agent_count: g.config.agent_count,
@@ -275,6 +297,14 @@ pub async fn run_server(
             eprintln!("File watcher error: {}", e);
         }
     });
+
+    // Start tmux monitor for real-time phase tracking
+    let project_dir = grotto_dir.parent().unwrap_or(std::path::Path::new("."));
+    if let Ok(g) = Grotto::load(project_dir) {
+        if let Some(session_id) = &g.config.session_id {
+            let _monitor = spawn_tmux_monitor(session_id.clone(), g.config.agent_count, tx.clone());
+        }
+    }
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
@@ -466,6 +496,8 @@ async fn api_register_session(
         Err(_) => (0, String::new()),
     };
 
+    let monitor_abort = spawn_tmux_monitor(body.id.clone(), agent_count, tx.clone());
+
     let entry = SessionEntry {
         id: body.id.clone(),
         dir: body.dir.clone(),
@@ -481,6 +513,7 @@ async fn api_register_session(
                 entry,
                 tx,
                 _watcher_abort: abort_handle,
+                _monitor_abort: Some(monitor_abort),
             },
         );
     }
@@ -651,6 +684,99 @@ fn mime_from_ext(path: &std::path::Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tmux pane monitor (spawned as a tokio task)
+// ---------------------------------------------------------------------------
+
+/// Spawn a tmux monitor that polls pane output every 750ms and broadcasts
+/// `agent:phase` events when an agent's phase changes.
+fn spawn_tmux_monitor(
+    session_id: String,
+    agent_count: usize,
+    tx: broadcast::Sender<String>,
+) -> tokio::task::AbortHandle {
+    let handle = tokio::spawn(async move {
+        run_tmux_monitor(session_id, agent_count, tx).await;
+    });
+    handle.abort_handle()
+}
+
+async fn run_tmux_monitor(
+    session_id: String,
+    agent_count: usize,
+    tx: broadcast::Sender<String>,
+) {
+    use std::collections::HashMap;
+
+    let mut prev_phases: HashMap<String, AgentPhase> = HashMap::new();
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
+
+    // Track consecutive capture failures to detect session death
+    let mut consecutive_failures: usize = 0;
+
+    loop {
+        interval.tick().await;
+
+        let snapshots = tokio::task::spawn_blocking({
+            let session_id = session_id.clone();
+            move || monitor::capture_all_agents(&session_id, agent_count)
+        })
+        .await
+        .unwrap_or_default();
+
+        if snapshots.is_empty() {
+            continue;
+        }
+
+        // Check if all panes failed to capture (session likely dead)
+        let all_finished = snapshots
+            .iter()
+            .all(|s| s.phase == AgentPhase::Finished && s.raw_content.is_empty());
+        if all_finished {
+            consecutive_failures += 1;
+            if consecutive_failures > 5 {
+                // Session is gone, stop polling
+                break;
+            }
+        } else {
+            consecutive_failures = 0;
+        }
+
+        for snap in &snapshots {
+            let changed = prev_phases
+                .get(&snap.agent_id)
+                .map(|prev| *prev != snap.phase)
+                .unwrap_or(true);
+
+            if changed {
+                prev_phases.insert(snap.agent_id.clone(), snap.phase.clone());
+
+                let ws_event = WsEvent {
+                    event_type: "agent:phase".to_string(),
+                    timestamp: snap.timestamp.to_rfc3339(),
+                    agent_id: Some(snap.agent_id.clone()),
+                    task_id: None,
+                    message: Some(format!(
+                        "Agent {} phase: {}",
+                        snap.agent_id, snap.phase
+                    )),
+                    data: Some(serde_json::json!({
+                        "phase": snap.phase.to_string(),
+                        "last_activity": snap.last_activity_line,
+                    })),
+                    agents: None,
+                    tasks: None,
+                    config: None,
+                };
+
+                if let Ok(json) = serde_json::to_string(&ws_event) {
+                    let _ = tx.send(json);
+                }
+            }
+        }
     }
 }
 
@@ -991,6 +1117,7 @@ mod tests {
                     },
                     tx,
                     _watcher_abort: abort_handle,
+                    _monitor_abort: None,
                 },
             );
         }

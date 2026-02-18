@@ -109,6 +109,7 @@ async fn test_ws_receives_agent_status_change() {
         current_task: Some("main".to_string()),
         progress: "Building the API".to_string(),
         last_update: chrono::Utc::now(),
+        phase: None,
     };
     let status_json = serde_json::to_string_pretty(&agent_status).unwrap();
     let status_path = dir.join(".grotto/agents/agent-1/status.json");
