@@ -3,8 +3,8 @@ use grotto_core::Grotto;
 use grotto_serve::WsEvent;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Find a free port by binding to port 0
@@ -130,7 +130,10 @@ async fn test_ws_receives_agent_status_change() {
     })
     .await;
 
-    assert!(result.is_ok(), "Should receive agent:status event within 5s");
+    assert!(
+        result.is_ok(),
+        "Should receive agent:status event within 5s"
+    );
     let event = result.unwrap();
     assert_eq!(event.agent_id, Some("agent-1".to_string()));
     assert!(event.message.unwrap().contains("working"));
@@ -228,7 +231,13 @@ async fn test_multiple_ws_clients_receive_same_events() {
 
     // Now trigger an event — both should receive it
     grotto
-        .log_event("broadcast_test", None, None, Some("hello both"), serde_json::json!({}))
+        .log_event(
+            "broadcast_test",
+            None,
+            None,
+            Some("hello both"),
+            serde_json::json!({}),
+        )
         .unwrap();
 
     let recv1 = tokio::time::timeout(Duration::from_secs(5), async {
@@ -392,7 +401,13 @@ async fn test_daemon_per_session_ws() {
 
     // Log an event and verify it arrives via WS
     grotto
-        .log_event("daemon_test", None, None, Some("daemon event"), serde_json::json!({}))
+        .log_event(
+            "daemon_test",
+            None,
+            None,
+            Some("daemon event"),
+            serde_json::json!({}),
+        )
         .unwrap();
 
     let result = tokio::time::timeout(Duration::from_secs(5), async {

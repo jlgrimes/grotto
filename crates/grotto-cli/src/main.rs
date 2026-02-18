@@ -207,8 +207,7 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
             "Failed to create tmux session: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        return Err(grotto_core::GrottoError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(grotto_core::GrottoError::Io(std::io::Error::other(
             "Failed to create tmux session",
         )));
     }
@@ -262,8 +261,7 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
     if !tmux_session_survived_startup_window("grotto") {
         let startup_output = startup_output_chunks.join("\n");
         handle_startup_failure(&project_dir, &grotto, &startup_output)?;
-        return Err(grotto_core::GrottoError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(grotto_core::GrottoError::Io(std::io::Error::other(
             "Agent startup failed: tmux session exited during startup window",
         )));
     }
@@ -586,17 +584,15 @@ fn kill_target(project_dir: PathBuf, target: String) -> Result<()> {
         println!("💀 Killing entire grotto session...");
 
         // Unregister from daemon if running
-        if daemon::is_daemon_running() {
-            if let Ok(grotto) = Grotto::load(&project_dir) {
-                if let Some(session_id) = &grotto.config.session_id {
+        if daemon::is_daemon_running()
+            && let Ok(grotto) = Grotto::load(&project_dir)
+                && let Some(session_id) = &grotto.config.session_id {
                     let mut registry = SessionRegistry::load();
                     if registry.unregister(session_id).is_some() {
                         let _ = registry.save();
                         println!("   Unregistered session '{}' from daemon", session_id);
                     }
                 }
-            }
-        }
 
         let output = Command::new("tmux")
             .args(["kill-session", "-t", "grotto"])
@@ -757,16 +753,15 @@ fn wait_for_completion(project_dir: PathBuf, interval: u64) -> Result<()> {
 
         // Show task board
         let task_board_path = grotto.grotto_dir.join("tasks.md");
-        if task_board_path.exists() {
-            if let Ok(content) = fs::read_to_string(&task_board_path) {
+        if task_board_path.exists()
+            && let Ok(content) = fs::read_to_string(&task_board_path) {
                 println!("{}", content);
             }
-        }
 
         // Show event summary
         let events_path = grotto.grotto_dir.join("events.jsonl");
-        if events_path.exists() {
-            if let Ok(content) = fs::read_to_string(&events_path) {
+        if events_path.exists()
+            && let Ok(content) = fs::read_to_string(&events_path) {
                 let event_count = content.lines().count();
                 let claims: Vec<&str> = content
                     .lines()
@@ -784,7 +779,6 @@ fn wait_for_completion(project_dir: PathBuf, interval: u64) -> Result<()> {
                     completions.len()
                 );
             }
-        }
     }
 
     // Write a summary file for the lead to consume
@@ -862,13 +856,13 @@ fn serve(project_dir: PathBuf, port: u16, no_open: bool) -> Result<()> {
     }
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        grotto_core::GrottoError::Io(std::io::Error::other(e))
     })?;
 
     rt.block_on(async {
         grotto_serve::run_server(grotto_dir, port, web_dir)
             .await
-            .map_err(|e| grotto_core::GrottoError::Io(e))
+            .map_err(grotto_core::GrottoError::Io)
     })
 }
 
@@ -890,7 +884,7 @@ fn daemon_start(port: u16) -> Result<()> {
 
     // Find the grotto binary path (ourselves)
     let exe = env::current_exe().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        grotto_core::GrottoError::Io(std::io::Error::other(e))
     })?;
 
     // Ensure daemon state directory exists
@@ -984,21 +978,21 @@ fn daemon_status() -> Result<()> {
 
 fn daemon_serve(port: u16, web_dir: Option<PathBuf>) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        grotto_core::GrottoError::Io(std::io::Error::other(e))
     })?;
 
     rt.block_on(async {
         grotto_serve::run_daemon(port, web_dir)
             .await
-            .map_err(|e| grotto_core::GrottoError::Io(e))
+            .map_err(grotto_core::GrottoError::Io)
     })
 }
 
 /// Find the web/ directory, checking common locations.
 fn find_web_dir() -> Option<PathBuf> {
     // 1. Relative to the binary
-    if let Ok(exe) = env::current_exe() {
-        if let Some(bin_dir) = exe.parent() {
+    if let Ok(exe) = env::current_exe()
+        && let Some(bin_dir) = exe.parent() {
             // Check if we're in target/debug or target/release
             let project_root = bin_dir.parent().and_then(|p| p.parent());
             if let Some(root) = project_root {
@@ -1008,11 +1002,10 @@ fn find_web_dir() -> Option<PathBuf> {
                 }
             }
         }
-    }
     // 2. Current directory
     let cwd_web = PathBuf::from("web");
     if cwd_web.exists() {
-        return Some(cwd_web.canonicalize().ok()?);
+        return cwd_web.canonicalize().ok();
     }
     None
 }

@@ -281,13 +281,12 @@ pub async fn run_server(
         .route("/health", get(health_handler))
         .with_state(state);
 
-    if let Some(web_path) = web_dir {
-        if web_path.exists() {
+    if let Some(web_path) = web_dir
+        && web_path.exists() {
             let serve_dir = tower_http::services::ServeDir::new(&web_path)
                 .append_index_html_on_directories(true);
             app = app.fallback_service(serve_dir);
         }
-    }
 
     let cors = tower_http::cors::CorsLayer::permissive();
     let app = app.layer(cors);
@@ -708,8 +707,8 @@ async fn run_file_watcher(
                                 }
                             }
                             "status.json" => {
-                                if let Ok(content) = tokio::fs::read_to_string(path).await {
-                                    if let Ok(agent) = serde_json::from_str::<AgentState>(&content)
+                                if let Ok(content) = tokio::fs::read_to_string(path).await
+                                    && let Ok(agent) = serde_json::from_str::<AgentState>(&content)
                                     {
                                         let ws_event = WsEvent {
                                             event_type: "agent:status".to_string(),
@@ -731,7 +730,6 @@ async fn run_file_watcher(
                                             let _ = tx.send(json);
                                         }
                                     }
-                                }
                             }
                             "tasks.md" => {
                                 let tasks = parse_task_board(path);

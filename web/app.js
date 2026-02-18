@@ -9,11 +9,11 @@
   const SESSION_ID = location.pathname.replace(/^\//, '').replace(/\/$/, '');
   const WS_URL = `ws://${location.host}/ws/${SESSION_ID}`;
   const SAND_Y_RATIO = 0.75; // sand line at 75% of stage height
-  const LOBSTER_SCALE = 2;
+  const CRAB_SCALE = 2;
   const PIXEL = 4; // size of one "pixel" in the pixel art
 
-  // Lobster colors for each agent
-  const LOBSTER_COLORS = [
+  // Crab colors for each agent
+  const CRAB_COLORS = [
     0xe06050, // coral red
     0x50a0e0, // ocean blue
     0xe0c050, // sandy gold
@@ -26,7 +26,7 @@
   let agents = {};
   let tasks = [];
   let config = {};
-  let lobsterSprites = {};
+  let crabSprites = {};
   let ws = null;
   let reconnectTimer = null;
 
@@ -44,9 +44,9 @@
 
   // --- Scene layers ---
   const bgLayer = new PIXI.Container();
-  const lobsterLayer = new PIXI.Container();
+  const crabLayer = new PIXI.Container();
   const labelLayer = new PIXI.Container();
-  app.stage.addChild(bgLayer, lobsterLayer, labelLayer);
+  app.stage.addChild(bgLayer, crabLayer, labelLayer);
 
   // --- Draw ocean background ---
   function drawBackground() {
@@ -120,32 +120,30 @@
     bgLayer.addChild(coral);
   }
 
-  // --- Pixel Art Lobster ---
-  // Draws a lobster using rectangles (pixel art style)
-  // Returns a Container with the lobster graphics
-  function createLobster(agentId, colorIndex) {
+  // --- Pixel Art Crab ---
+  // Draws a crab using rectangles (pixel art style)
+  // Returns a Container with the crab graphics
+  function createCrab(agentId, colorIndex) {
     const p = PIXEL;
-    const color = LOBSTER_COLORS[colorIndex % LOBSTER_COLORS.length];
+    const color = CRAB_COLORS[colorIndex % CRAB_COLORS.length];
     const darkColor = darken(color, 0.7);
     const lightColor = lighten(color, 1.3);
 
-    const lobster = new PIXI.Container();
-    lobster.label = agentId;
+    const crab = new PIXI.Container();
+    crab.label = agentId;
 
-    // Body (elliptical blob made of pixel rects)
+    // Body — wide and round (crabs are wider than tall)
     const bodyPixels = [
       // row 0 (top) — narrow
-      [2, 0], [3, 0], [4, 0], [5, 0],
+      [3, 0], [4, 0], [5, 0], [6, 0],
       // row 1 — wider
-      [1, 1], [2, 1], [3, 1], [4, 1], [5, 1], [6, 1],
+      [2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1],
       // row 2 — widest
-      [0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2], [7, 2],
-      // row 3
-      [0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [6, 3], [7, 3],
+      [1, 2], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2], [7, 2], [8, 2],
+      // row 3 — widest
+      [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3],
       // row 4 — narrowing
-      [1, 4], [2, 4], [3, 4], [4, 4], [5, 4], [6, 4],
-      // row 5 (bottom)
-      [2, 5], [3, 5], [4, 5], [5, 5],
+      [2, 4], [3, 4], [4, 4], [5, 4], [6, 4], [7, 4],
     ];
 
     const body = new PIXI.Graphics();
@@ -155,66 +153,83 @@
     body.fill(color);
 
     // Shell highlight
-    const highlights = [[3, 1], [4, 1], [2, 2], [3, 2]];
+    const highlights = [[4, 1], [5, 1], [3, 2], [4, 2]];
     for (const [hx, hy] of highlights) {
       body.rect(hx * p, hy * p, p, p);
     }
     body.fill(lightColor);
 
-    lobster.addChild(body);
+    // Shell pattern (cute face/markings)
+    const markings = new PIXI.Graphics();
+    markings.rect(4 * p, 3 * p, p, p);
+    markings.rect(5 * p, 3 * p, p, p);
+    markings.fill(darkColor);
+    body.addChild(markings);
 
-    // Eyes
+    crab.addChild(body);
+
+    // Eyes on stalks
     const eyes = new PIXI.Graphics();
     // Eye stalks
-    eyes.rect(2 * p, -1 * p, p, p);
-    eyes.rect(5 * p, -1 * p, p, p);
+    eyes.rect(3 * p, -1 * p, p, p);
+    eyes.rect(6 * p, -1 * p, p, p);
     eyes.fill(color);
     // Eyeballs
-    eyes.rect(2 * p, -2 * p, p, p);
-    eyes.rect(5 * p, -2 * p, p, p);
+    eyes.rect(3 * p, -2 * p, p, p);
+    eyes.rect(6 * p, -2 * p, p, p);
     eyes.fill(0xffffff);
     // Pupils
-    eyes.rect(2 * p + p / 2, -2 * p, p / 2, p);
-    eyes.rect(5 * p + p / 2, -2 * p, p / 2, p);
+    eyes.rect(3 * p + p / 2, -2 * p, p / 2, p);
+    eyes.rect(6 * p + p / 2, -2 * p, p / 2, p);
     eyes.fill(0x111111);
-    lobster.addChild(eyes);
+    crab.addChild(eyes);
 
-    // Claws (left)
+    // Big left claw
     const leftClaw = new PIXI.Graphics();
-    leftClaw.rect(-2 * p, 1 * p, p, p);
-    leftClaw.rect(-3 * p, 0 * p, p, 2 * p);
-    leftClaw.rect(-4 * p, 0 * p, p, p);
+    leftClaw.rect(-1 * p, 1 * p, p, p);      // arm
+    leftClaw.rect(-2 * p, 0 * p, p, p);      // arm joint
+    leftClaw.rect(-3 * p, -1 * p, p, 2 * p); // upper pincer
+    leftClaw.rect(-4 * p, -1 * p, p, p);     // pincer tip top
+    leftClaw.rect(-4 * p, 1 * p, p, p);      // pincer tip bottom
     leftClaw.fill(darkColor);
+    // Pincer inner
+    leftClaw.rect(-3 * p, 0 * p, p, p);
+    leftClaw.fill(lightColor);
     leftClaw.label = 'leftClaw';
-    lobster.addChild(leftClaw);
+    crab.addChild(leftClaw);
 
-    // Claws (right)
+    // Big right claw
     const rightClaw = new PIXI.Graphics();
-    rightClaw.rect(8 * p, 1 * p, p, p);
-    rightClaw.rect(9 * p, 0 * p, p, 2 * p);
-    rightClaw.rect(10 * p, 0 * p, p, p);
+    rightClaw.rect(9 * p, 1 * p, p, p);       // arm
+    rightClaw.rect(10 * p, 0 * p, p, p);      // arm joint
+    rightClaw.rect(11 * p, -1 * p, p, 2 * p); // upper pincer
+    rightClaw.rect(12 * p, -1 * p, p, p);     // pincer tip top
+    rightClaw.rect(12 * p, 1 * p, p, p);      // pincer tip bottom
     rightClaw.fill(darkColor);
+    // Pincer inner
+    rightClaw.rect(11 * p, 0 * p, p, p);
+    rightClaw.fill(lightColor);
     rightClaw.label = 'rightClaw';
-    lobster.addChild(rightClaw);
+    crab.addChild(rightClaw);
 
-    // Legs (3 per side)
+    // Legs (4 per side, crabs have more visible legs)
     const legs = new PIXI.Graphics();
-    for (let i = 0; i < 3; i++) {
-      const ly = (2 + i) * p + p;
-      // Left legs
-      legs.rect(-1 * p, ly, p, p / 2);
-      legs.rect(-2 * p, ly + p / 2, p, p / 2);
+    for (let i = 0; i < 4; i++) {
+      const ly = (1.5 + i * 0.8) * p + p;
+      // Left legs — angled outward
+      legs.rect(0 * p, ly, p, p / 2);
+      legs.rect(-1 * p, ly + p / 2, p, p / 2);
       // Right legs
-      legs.rect(8 * p, ly, p, p / 2);
-      legs.rect(9 * p, ly + p / 2, p, p / 2);
+      legs.rect(9 * p, ly, p, p / 2);
+      legs.rect(10 * p, ly + p / 2, p, p / 2);
     }
     legs.fill(darkColor);
     legs.label = 'legs';
-    lobster.addChild(legs);
+    crab.addChild(legs);
 
-    // Center the lobster
-    lobster.pivot.set((7 * p) / 2, (5 * p) / 2);
-    lobster.scale.set(LOBSTER_SCALE);
+    // Center the crab
+    crab.pivot.set((9 * p) / 2, (4 * p) / 2);
+    crab.scale.set(CRAB_SCALE);
 
     // Agent name label
     const label = new PIXI.Text({
@@ -242,16 +257,16 @@
     statusLabel.anchor.set(0.5, 0);
     statusLabel.label = 'statusLabel';
 
-    // Wrapper container that holds lobster + labels
+    // Wrapper container that holds crab + labels
     const wrapper = new PIXI.Container();
-    wrapper.addChild(lobster);
+    wrapper.addChild(crab);
     wrapper.addChild(label);
     wrapper.addChild(statusLabel);
     wrapper.label = agentId;
 
-    // Position labels relative to lobster
-    label.position.set(0, -LOBSTER_SCALE * 3 * p);
-    statusLabel.position.set(0, LOBSTER_SCALE * 4 * p);
+    // Position labels relative to crab
+    label.position.set(0, -CRAB_SCALE * 3 * p);
+    statusLabel.position.set(0, CRAB_SCALE * 4 * p);
 
     // Animation state
     wrapper._anim = {
@@ -288,11 +303,11 @@
     frameCount++;
     const dt = app.ticker.deltaTime;
 
-    for (const [id, wrapper] of Object.entries(lobsterSprites)) {
+    for (const [id, wrapper] of Object.entries(crabSprites)) {
       const anim = wrapper._anim;
-      const lobster = wrapper.children[0]; // the lobster container
-      const leftClaw = lobster.children.find(c => c.label === 'leftClaw');
-      const rightClaw = lobster.children.find(c => c.label === 'rightClaw');
+      const crab = wrapper.children[0]; // the crab container
+      const leftClaw = crab.children.find(c => c.label === 'leftClaw');
+      const rightClaw = crab.children.find(c => c.label === 'rightClaw');
       anim.frame += dt;
 
       if (anim.state === 'spawning') {
@@ -314,15 +329,15 @@
         // Occasional direction change
         if (Math.random() < 0.003) {
           anim.walkDir *= -1;
-          lobster.scale.x = LOBSTER_SCALE * anim.walkDir;
+          crab.scale.x = CRAB_SCALE * anim.walkDir;
         }
 
         wrapper.x += anim.walkDir * anim.walkSpeed * 0.3 * dt;
 
         // Keep on screen
         const margin = 60;
-        if (wrapper.x < margin) { anim.walkDir = 1; lobster.scale.x = LOBSTER_SCALE; }
-        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; lobster.scale.x = -LOBSTER_SCALE; }
+        if (wrapper.x < margin) { anim.walkDir = 1; crab.scale.x = CRAB_SCALE; }
+        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; crab.scale.x = -CRAB_SCALE; }
 
         // Gentle claw wave
         if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.05) * 2;
@@ -344,14 +359,14 @@
         }
 
         // Slight rocking
-        lobster.rotation = Math.sin(anim.frame * 0.1) * 0.03;
+        crab.rotation = Math.sin(anim.frame * 0.1) * 0.03;
 
       } else if (anim.state === 'completed') {
         // Victory dance — bounce + spin
         const bounce = Math.abs(Math.sin(anim.frame * 0.12)) * 15;
         wrapper.y = app.screen.height * SAND_Y_RATIO - 10 - bounce;
 
-        lobster.rotation = Math.sin(anim.frame * 0.15) * 0.2;
+        crab.rotation = Math.sin(anim.frame * 0.15) * 0.2;
 
         if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.3) * 6;
         if (rightClaw) rightClaw.y = Math.sin(anim.frame * 0.3 + Math.PI) * 6;
@@ -359,7 +374,7 @@
         // Transition to idle after some time
         if (anim.frame > anim.danceStart + 200) {
           anim.state = 'idle';
-          lobster.rotation = 0;
+          crab.rotation = 0;
         }
       }
 
@@ -386,9 +401,9 @@
     }
   });
 
-  // --- Place lobsters on screen ---
-  function layoutLobsters() {
-    const ids = Object.keys(lobsterSprites);
+  // --- Place crabs on screen ---
+  function layoutCrabs() {
+    const ids = Object.keys(crabSprites);
     const count = ids.length;
     if (count === 0) return;
 
@@ -396,7 +411,7 @@
     const spacing = w / (count + 1);
 
     for (let i = 0; i < ids.length; i++) {
-      const wrapper = lobsterSprites[ids[i]];
+      const wrapper = crabSprites[ids[i]];
       const targetX = spacing * (i + 1);
       if (wrapper._anim.state === 'spawning') {
         wrapper.x = targetX;
@@ -405,26 +420,26 @@
     }
   }
 
-  // --- Ensure lobster sprites match agent state ---
-  function syncLobsters() {
+  // --- Ensure crab sprites match agent state ---
+  function syncCrabs() {
     const agentIds = Object.keys(agents);
 
-    // Create missing lobsters
+    // Create missing crabs
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i];
-      if (!lobsterSprites[id]) {
-        const wrapper = createLobster(id, i);
+      if (!crabSprites[id]) {
+        const wrapper = createCrab(id, i);
         wrapper.x = app.screen.width / 2;
         wrapper.y = app.screen.height * SAND_Y_RATIO + 30;
         wrapper._anim.state = 'spawning';
-        lobsterSprites[id] = wrapper;
-        lobsterLayer.addChild(wrapper);
+        crabSprites[id] = wrapper;
+        crabLayer.addChild(wrapper);
       }
     }
 
     // Update states
     for (const [id, agent] of Object.entries(agents)) {
-      const wrapper = lobsterSprites[id];
+      const wrapper = crabSprites[id];
       if (!wrapper) continue;
 
       const anim = wrapper._anim;
@@ -443,7 +458,7 @@
       }
     }
 
-    layoutLobsters();
+    layoutCrabs();
   }
 
   // --- Task Board UI ---
@@ -577,7 +592,7 @@
           config = event.config;
           document.getElementById('task-label').textContent = config.task || '';
         }
-        syncLobsters();
+        syncCrabs();
         renderTaskBoard();
         break;
 
@@ -587,7 +602,7 @@
             ...agents[event.agent_id],
             ...event.data,
           };
-          syncLobsters();
+          syncCrabs();
         }
         addLogEntry(event);
         break;
@@ -642,14 +657,14 @@
             if (agent) {
               agent.state = 'working';
               agent.current_task = event.task_id;
-              syncLobsters();
+              syncCrabs();
             }
           } else if (rawType === 'task_completed' && event.agent_id) {
             const agent = agents[event.agent_id];
             if (agent) {
               agent.state = 'idle';
               agent.current_task = null;
-              syncLobsters();
+              syncCrabs();
             }
           }
         }
@@ -672,7 +687,7 @@
   // --- Window resize ---
   function onResize() {
     drawBackground();
-    layoutLobsters();
+    layoutCrabs();
   }
 
   window.addEventListener('resize', () => {

@@ -1,29 +1,19 @@
 use rand::Rng;
 
 const ADJECTIVES: &[&str] = &[
-    "crimson", "silent", "bright", "swift", "golden",
-    "amber", "azure", "bold", "calm", "dark",
-    "deep", "eager", "faint", "gentle", "grand",
-    "hazy", "icy", "jade", "keen", "lush",
-    "misty", "noble", "pale", "quick", "rosy",
-    "rusty", "sandy", "sharp", "shy", "slim",
-    "soft", "stark", "steep", "still", "stout",
-    "sunny", "tame", "tart", "tiny", "vast",
-    "vivid", "warm", "weary", "wild", "wiry",
-    "young", "dusty", "fresh", "mossy", "stormy",
+    "crimson", "silent", "bright", "swift", "golden", "amber", "azure", "bold", "calm", "dark",
+    "deep", "eager", "faint", "gentle", "grand", "hazy", "icy", "jade", "keen", "lush", "misty",
+    "noble", "pale", "quick", "rosy", "rusty", "sandy", "sharp", "shy", "slim", "soft", "stark",
+    "steep", "still", "stout", "sunny", "tame", "tart", "tiny", "vast", "vivid", "warm", "weary",
+    "wild", "wiry", "young", "dusty", "fresh", "mossy", "stormy",
 ];
 
 const NOUNS: &[&str] = &[
-    "coral", "tide", "reef", "crab", "wave",
-    "pearl", "shell", "kelp", "dune", "gull",
-    "foam", "dock", "cove", "cape", "mast",
-    "hull", "keel", "oar", "buoy", "knot",
-    "sail", "helm", "wake", "surf", "sand",
-    "cliff", "isle", "bay", "fin", "tern",
-    "seal", "pike", "bass", "cod", "wren",
-    "lark", "hare", "fawn", "moth", "newt",
-    "fern", "moss", "bark", "root", "vine",
-    "reed", "pond", "glen", "dale", "ridge",
+    "coral", "tide", "reef", "crab", "wave", "pearl", "shell", "kelp", "dune", "gull", "foam",
+    "dock", "cove", "cape", "mast", "hull", "keel", "oar", "buoy", "knot", "sail", "helm", "wake",
+    "surf", "sand", "cliff", "isle", "bay", "fin", "tern", "seal", "pike", "bass", "cod", "wren",
+    "lark", "hare", "fawn", "moth", "newt", "fern", "moss", "bark", "root", "vine", "reed", "pond",
+    "glen", "dale", "ridge",
 ];
 
 /// Generate a semantic session ID in `adjective-noun-noun` format.
@@ -54,7 +44,11 @@ mod tests {
     fn id_parts_are_valid_words() {
         let id = generate_session_id();
         let parts: Vec<&str> = id.split('-').collect();
-        assert!(ADJECTIVES.contains(&parts[0]), "unknown adjective: {}", parts[0]);
+        assert!(
+            ADJECTIVES.contains(&parts[0]),
+            "unknown adjective: {}",
+            parts[0]
+        );
         assert!(NOUNS.contains(&parts[1]), "unknown noun: {}", parts[1]);
         assert!(NOUNS.contains(&parts[2]), "unknown noun: {}", parts[2]);
     }

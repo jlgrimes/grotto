@@ -98,15 +98,18 @@ grotto spawn 3 "task description with clear sub-tasks"
 
 ### 2. Start the portal
 ```bash
-grotto serve --no-open &
+grotto daemon start
 ```
-This starts a WebSocket server on port 9090 that:
+This starts a background daemon on port 9091 that:
+- Manages multiple sessions
 - Watches `.grotto/` for file changes
-- Broadcasts real-time events to connected browsers
+- Broadcasts real-time events to connected browsers via WebSocket
 - Serves a pixel art web UI with animated crabs (one per agent)
 
+Each session gets a semantic ID (e.g., `crimson-coral-tide`) used as the URL route.
+
 ### 3. Send the user the link
-Send the user `http://<host-ip>:9090` to watch progress in real-time.
+Send the user `http://<host-ip>:9091/<session-id>` to watch progress in real-time.
 To get your IP: `hostname -I | awk '{print $1}'`
 
 ### 4. Monitor
@@ -161,7 +164,7 @@ You (OpenClaw agent / team lead)
   ├── events.jsonl     # Event log (watched by serve)
   └── agents/          # Per-agent status (watched by serve)
         ↓
-  grotto serve (file watcher + WS broadcast)
+  grotto daemon (file watcher + WS broadcast on :9091)
         ↓
   Browser → pixel art crabs working in real-time
 ```
