@@ -4,7 +4,7 @@ use axum::{
         Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
 use futures::{SinkExt, StreamExt};
@@ -17,6 +17,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
+
+#[derive(rust_embed::Embed)]
+#[folder = "../../web/"]
+struct WebAssets;
 
 // ---------------------------------------------------------------------------
 // Public types (kept backward-compatible)
@@ -316,6 +320,8 @@ pub async fn run_server(
             let serve_dir = tower_http::services::ServeDir::new(&web_path)
                 .append_index_html_on_directories(true);
             app = app.fallback_service(serve_dir);
+        } else {
+            app = app.fallback(serve_embedded);
         }
 
     let cors = tower_http::cors::CorsLayer::permissive();
@@ -618,20 +624,11 @@ async fn daemon_fallback(
     state.sync_from_registry().await;
     let path = req.uri().path();
 
-    let Some(web_dir) = &state.web_dir else {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            "no web directory configured",
-        )
-            .into_response();
-    };
+    let web_dir = state.web_dir.as_ref();
 
     // Root → serve index.html
     if path == "/" {
-        return match tokio::fs::read_to_string(web_dir.join("index.html")).await {
-            Ok(html) => Html(html).into_response(),
-            Err(_) => (axum::http::StatusCode::NOT_FOUND, "index.html not found").into_response(),
-        };
+        return serve_file_or_embedded(web_dir, "index.html").await;
     }
 
     let segment = path.trim_start_matches('/');
@@ -641,37 +638,59 @@ async fn daemon_fallback(
     for page in &html_pages {
         if segment == *page {
             let filename = format!("{}.html", page);
-            return match tokio::fs::read_to_string(web_dir.join(&filename)).await {
-                Ok(html) => Html(html).into_response(),
-                Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("{} not found", filename)).into_response(),
-            };
+            return serve_file_or_embedded(web_dir, &filename).await;
         }
     }
 
     // Static files — anything with a file extension (supports subdirs)
     if segment.contains('.') {
-        let file_path = web_dir.join(segment);
-        return match tokio::fs::read(&file_path).await {
-            Ok(content) => {
-                let mime = mime_from_ext(&file_path);
-                ([(axum::http::header::CONTENT_TYPE, mime)], content).into_response()
-            }
-            Err(_) => (axum::http::StatusCode::NOT_FOUND, "file not found").into_response(),
-        };
+        return serve_file_or_embedded(web_dir, segment).await;
     }
 
     // Session route — serve session.html for registered session IDs
     let registry = SessionRegistry::load();
-    let is_session = registry.sessions.contains_key(segment);
-
-    if is_session {
-        return match tokio::fs::read_to_string(web_dir.join("session.html")).await {
-            Ok(html) => Html(html).into_response(),
-            Err(_) => (axum::http::StatusCode::NOT_FOUND, "session.html not found").into_response(),
-        };
+    if registry.sessions.contains_key(segment) {
+        return serve_file_or_embedded(web_dir, "session.html").await;
     }
 
     (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+/// Serve a file from disk (if web_dir is set and file exists), otherwise from embedded assets.
+async fn serve_file_or_embedded(web_dir: Option<&PathBuf>, rel_path: &str) -> Response {
+    // Try disk first
+    if let Some(dir) = web_dir {
+        let file_path = dir.join(rel_path);
+        if let Ok(content) = tokio::fs::read(&file_path).await {
+            let mime = mime_from_ext(&file_path);
+            return ([(axum::http::header::CONTENT_TYPE, mime)], content).into_response();
+        }
+    }
+
+    // Fall back to embedded
+    serve_embedded_file(rel_path)
+}
+
+/// Serve a single file from embedded assets.
+fn serve_embedded_file(rel_path: &str) -> Response {
+    match WebAssets::get(rel_path) {
+        Some(file) => {
+            let mime = mime_from_ext(std::path::Path::new(rel_path));
+            (
+                [(axum::http::header::CONTENT_TYPE, mime)],
+                file.data.to_vec(),
+            )
+                .into_response()
+        }
+        None => (axum::http::StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+/// Axum fallback handler that serves from embedded assets (used by single-session server).
+async fn serve_embedded(req: axum::http::Request<axum::body::Body>) -> Response {
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    serve_embedded_file(path)
 }
 
 fn mime_from_ext(path: &std::path::Path) -> &'static str {
