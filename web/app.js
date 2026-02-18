@@ -5,22 +5,10 @@
   'use strict';
 
   // --- Constants ---
-  // Extract session ID from URL path (e.g., /crimson-coral-tide -> crimson-coral-tide)
   const SESSION_ID = location.pathname.replace(/^\//, '').replace(/\/$/, '');
   const WS_URL = `ws://${location.host}/ws/${SESSION_ID}`;
-  const SAND_Y_RATIO = 0.75; // sand line at 75% of stage height
-  const CRAB_SCALE = 2;
-  const PIXEL = 4; // size of one "pixel" in the pixel art
-
-  // Crab colors for each agent
-  const CRAB_COLORS = [
-    0xe06050, // coral red
-    0x50a0e0, // ocean blue
-    0xe0c050, // sandy gold
-    0x50c878, // sea green
-    0xc070d0, // purple
-    0xe08040, // orange
-  ];
+  const SAND_Y_RATIO = 0.75;
+  const CRAB_SCALE = 0.35; // scale down the DALL-E sprites
 
   // --- State ---
   let agents = {};
@@ -29,6 +17,33 @@
   let crabSprites = {};
   let ws = null;
   let reconnectTimer = null;
+
+  // --- Load sprite textures ---
+  const SPRITE_PATHS = {
+    idle: '/sprites/crab_idle.png',
+    working: '/sprites/crab_working.png',
+    celebrating: '/sprites/crab_celebrating.png',
+    spawning: '/sprites/crab_spawning.png',
+  };
+
+  const textures = {};
+  for (const [state, path] of Object.entries(SPRITE_PATHS)) {
+    try {
+      textures[state] = await PIXI.Assets.load(path);
+    } catch (e) {
+      console.warn(`Failed to load sprite: ${path}`, e);
+    }
+  }
+
+  // Hue shifts for different crab colors (base is red ~0°)
+  const CRAB_COLORS = [
+    { name: 'coral',  hueShift: 0 },
+    { name: 'azure',  hueShift: 200 },
+    { name: 'sunny',  hueShift: 45 },
+    { name: 'kelp',   hueShift: 135 },
+    { name: 'urchin', hueShift: 280 },
+    { name: 'tang',   hueShift: 25 },
+  ];
 
   // --- Pixi.js Setup ---
   const app = new PIXI.Application();
@@ -42,7 +57,6 @@
     resolution: 1,
   });
 
-  // --- Scene layers ---
   const bgLayer = new PIXI.Container();
   const crabLayer = new PIXI.Container();
   const labelLayer = new PIXI.Container();
@@ -51,18 +65,14 @@
   // --- Draw ocean background ---
   function drawBackground() {
     bgLayer.removeChildren();
-
     const w = app.screen.width;
     const h = app.screen.height;
     const sandY = h * SAND_Y_RATIO;
 
-    // Water
     const water = new PIXI.Graphics();
-    water.rect(0, 0, w, sandY);
-    water.fill(0x1a3a5c);
+    water.rect(0, 0, w, sandY).fill(0x1a3a5c);
     bgLayer.addChild(water);
 
-    // Water ripple lines
     for (let y = 20; y < sandY; y += 30) {
       const ripple = new PIXI.Graphics();
       ripple.moveTo(0, y);
@@ -71,26 +81,21 @@
         ripple.lineTo(x + 20, y);
       }
       ripple.stroke({ width: 1, color: 0x2a5a8c, alpha: 0.3 });
+      ripple.label = 'ripple';
       bgLayer.addChild(ripple);
     }
 
-    // Sand
     const sand = new PIXI.Graphics();
-    sand.rect(0, sandY, w, h - sandY);
-    sand.fill(0xd4a857);
+    sand.rect(0, sandY, w, h - sandY).fill(0xd4a857);
     bgLayer.addChild(sand);
 
-    // Sand texture dots
     const dots = new PIXI.Graphics();
     for (let i = 0; i < 80; i++) {
-      const dx = Math.random() * w;
-      const dy = sandY + Math.random() * (h - sandY);
-      dots.circle(dx, dy, 1);
+      dots.circle(Math.random() * w, sandY + Math.random() * (h - sandY), 1);
     }
     dots.fill({ color: 0xb08930, alpha: 0.5 });
     bgLayer.addChild(dots);
 
-    // Coral decorations on the sand
     drawCoral(w * 0.1, sandY - 10);
     drawCoral(w * 0.85, sandY - 8);
     drawCoral(w * 0.5, sandY - 12);
@@ -98,175 +103,63 @@
 
   function drawCoral(x, y) {
     const coral = new PIXI.Graphics();
-    // Simple coral: a few branching rectangles
     const colors = [0xe06050, 0xc04838, 0xff7868];
     const c = colors[Math.floor(Math.random() * colors.length)];
-
-    // trunk
-    coral.rect(x - 2, y, 4, 14);
-    coral.fill(c);
-    // left branch
-    coral.rect(x - 8, y - 6, 4, 10);
-    coral.fill(c);
-    // right branch
-    coral.rect(x + 4, y - 4, 4, 8);
-    coral.fill(c);
-    // tips
+    coral.rect(x - 2, y, 4, 14).fill(c);
+    coral.rect(x - 8, y - 6, 4, 10).fill(c);
+    coral.rect(x + 4, y - 4, 4, 8).fill(c);
     coral.circle(x, y - 2, 3);
     coral.circle(x - 6, y - 8, 2);
     coral.circle(x + 6, y - 6, 2);
     coral.fill(0xff9080);
-
     bgLayer.addChild(coral);
   }
 
-  // --- Pixel Art Crab ---
-  // Draws a crab using rectangles (pixel art style)
-  // Returns a Container with the crab graphics
+  // --- Create Crab using DALL-E sprites ---
   function createCrab(agentId, colorIndex) {
-    const p = PIXEL;
-    const color = CRAB_COLORS[colorIndex % CRAB_COLORS.length];
-    const darkColor = darken(color, 0.7);
-    const lightColor = lighten(color, 1.3);
+    const wrapper = new PIXI.Container();
+    wrapper.label = agentId;
 
-    const crab = new PIXI.Container();
-    crab.label = agentId;
+    // Crab sprite
+    const tex = textures.idle || PIXI.Texture.WHITE;
+    const sprite = new PIXI.Sprite(tex);
+    sprite.anchor.set(0.5, 0.85); // bottom-center anchor so it sits on sand
+    sprite.scale.set(CRAB_SCALE);
+    sprite.label = 'crabSprite';
 
-    // Body — wide and round (crabs are wider than tall)
-    const bodyPixels = [
-      // row 0 (top) — narrow
-      [3, 0], [4, 0], [5, 0], [6, 0],
-      // row 1 — wider
-      [2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1],
-      // row 2 — widest
-      [1, 2], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2], [7, 2], [8, 2],
-      // row 3 — widest
-      [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3],
-      // row 4 — narrowing
-      [2, 4], [3, 4], [4, 4], [5, 4], [6, 4], [7, 4],
-    ];
-
-    const body = new PIXI.Graphics();
-    for (const [bx, by] of bodyPixels) {
-      body.rect(bx * p, by * p, p, p);
+    // Apply hue shift for color variety
+    const colorDef = CRAB_COLORS[colorIndex % CRAB_COLORS.length];
+    if (colorDef.hueShift !== 0) {
+      try {
+        const matrix = new PIXI.ColorMatrixFilter();
+        matrix.hue(colorDef.hueShift - 10, false); // base crab is ~10° red
+        sprite.filters = [matrix];
+      } catch (e) {
+        // ColorMatrixFilter may not be available in all builds
+      }
     }
-    body.fill(color);
 
-    // Shell highlight
-    const highlights = [[4, 1], [5, 1], [3, 2], [4, 2]];
-    for (const [hx, hy] of highlights) {
-      body.rect(hx * p, hy * p, p, p);
-    }
-    body.fill(lightColor);
-
-    // Shell pattern (cute face/markings)
-    const markings = new PIXI.Graphics();
-    markings.rect(4 * p, 3 * p, p, p);
-    markings.rect(5 * p, 3 * p, p, p);
-    markings.fill(darkColor);
-    body.addChild(markings);
-
-    crab.addChild(body);
-
-    // Eyes on stalks
-    const eyes = new PIXI.Graphics();
-    // Eye stalks
-    eyes.rect(3 * p, -1 * p, p, p);
-    eyes.rect(6 * p, -1 * p, p, p);
-    eyes.fill(color);
-    // Eyeballs
-    eyes.rect(3 * p, -2 * p, p, p);
-    eyes.rect(6 * p, -2 * p, p, p);
-    eyes.fill(0xffffff);
-    // Pupils
-    eyes.rect(3 * p + p / 2, -2 * p, p / 2, p);
-    eyes.rect(6 * p + p / 2, -2 * p, p / 2, p);
-    eyes.fill(0x111111);
-    crab.addChild(eyes);
-
-    // Big left claw
-    const leftClaw = new PIXI.Graphics();
-    leftClaw.rect(-1 * p, 1 * p, p, p);      // arm
-    leftClaw.rect(-2 * p, 0 * p, p, p);      // arm joint
-    leftClaw.rect(-3 * p, -1 * p, p, 2 * p); // upper pincer
-    leftClaw.rect(-4 * p, -1 * p, p, p);     // pincer tip top
-    leftClaw.rect(-4 * p, 1 * p, p, p);      // pincer tip bottom
-    leftClaw.fill(darkColor);
-    // Pincer inner
-    leftClaw.rect(-3 * p, 0 * p, p, p);
-    leftClaw.fill(lightColor);
-    leftClaw.label = 'leftClaw';
-    crab.addChild(leftClaw);
-
-    // Big right claw
-    const rightClaw = new PIXI.Graphics();
-    rightClaw.rect(9 * p, 1 * p, p, p);       // arm
-    rightClaw.rect(10 * p, 0 * p, p, p);      // arm joint
-    rightClaw.rect(11 * p, -1 * p, p, 2 * p); // upper pincer
-    rightClaw.rect(12 * p, -1 * p, p, p);     // pincer tip top
-    rightClaw.rect(12 * p, 1 * p, p, p);      // pincer tip bottom
-    rightClaw.fill(darkColor);
-    // Pincer inner
-    rightClaw.rect(11 * p, 0 * p, p, p);
-    rightClaw.fill(lightColor);
-    rightClaw.label = 'rightClaw';
-    crab.addChild(rightClaw);
-
-    // Legs (4 per side, crabs have more visible legs)
-    const legs = new PIXI.Graphics();
-    for (let i = 0; i < 4; i++) {
-      const ly = (1.5 + i * 0.8) * p + p;
-      // Left legs — angled outward
-      legs.rect(0 * p, ly, p, p / 2);
-      legs.rect(-1 * p, ly + p / 2, p, p / 2);
-      // Right legs
-      legs.rect(9 * p, ly, p, p / 2);
-      legs.rect(10 * p, ly + p / 2, p, p / 2);
-    }
-    legs.fill(darkColor);
-    legs.label = 'legs';
-    crab.addChild(legs);
-
-    // Center the crab
-    crab.pivot.set((9 * p) / 2, (4 * p) / 2);
-    crab.scale.set(CRAB_SCALE);
+    wrapper.addChild(sprite);
 
     // Agent name label
     const label = new PIXI.Text({
       text: agentId,
-      style: {
-        fontFamily: 'Courier New',
-        fontSize: 11,
-        fill: 0xe0d8c8,
-        align: 'center',
-      },
+      style: { fontFamily: 'Courier New', fontSize: 11, fill: 0xe0d8c8, align: 'center' },
     });
     label.anchor.set(0.5, 1);
     label.label = 'nameLabel';
+    label.y = -tex.height * CRAB_SCALE * 0.2;
+    wrapper.addChild(label);
 
-    // Status label below
+    // Status label
     const statusLabel = new PIXI.Text({
       text: '',
-      style: {
-        fontFamily: 'Courier New',
-        fontSize: 9,
-        fill: 0x8899aa,
-        align: 'center',
-      },
+      style: { fontFamily: 'Courier New', fontSize: 9, fill: 0x8899aa, align: 'center' },
     });
     statusLabel.anchor.set(0.5, 0);
     statusLabel.label = 'statusLabel';
-
-    // Wrapper container that holds crab + labels
-    const wrapper = new PIXI.Container();
-    wrapper.addChild(crab);
-    wrapper.addChild(label);
+    statusLabel.y = tex.height * CRAB_SCALE * 0.2;
     wrapper.addChild(statusLabel);
-    wrapper.label = agentId;
-
-    // Position labels relative to crab
-    label.position.set(0, -CRAB_SCALE * 3 * p);
-    statusLabel.position.set(0, CRAB_SCALE * 4 * p);
 
     // Animation state
     wrapper._anim = {
@@ -277,23 +170,23 @@
       bobPhase: Math.random() * Math.PI * 2,
       targetX: 0,
       spawnProgress: 0,
+      currentTexture: 'idle',
     };
 
     return wrapper;
   }
 
-  function darken(color, factor) {
-    const r = Math.floor(((color >> 16) & 0xff) * factor);
-    const g = Math.floor(((color >> 8) & 0xff) * factor);
-    const b = Math.floor((color & 0xff) * factor);
-    return (r << 16) | (g << 8) | b;
-  }
+  // --- Switch crab sprite texture based on state ---
+  function setCrabTexture(wrapper, stateName) {
+    const sprite = wrapper.children.find(c => c.label === 'crabSprite');
+    if (!sprite) return;
 
-  function lighten(color, factor) {
-    const r = Math.min(255, Math.floor(((color >> 16) & 0xff) * factor));
-    const g = Math.min(255, Math.floor(((color >> 8) & 0xff) * factor));
-    const b = Math.min(255, Math.floor((color & 0xff) * factor));
-    return (r << 16) | (g << 8) | b;
+    const texName = stateName === 'completed' ? 'celebrating' : (stateName || 'idle');
+    const tex = textures[texName] || textures.idle;
+    if (tex && sprite.texture !== tex) {
+      sprite.texture = tex;
+      wrapper._anim.currentTexture = texName;
+    }
   }
 
   // --- Animation Loop ---
@@ -305,76 +198,55 @@
 
     for (const [id, wrapper] of Object.entries(crabSprites)) {
       const anim = wrapper._anim;
-      const crab = wrapper.children[0]; // the crab container
-      const leftClaw = crab.children.find(c => c.label === 'leftClaw');
-      const rightClaw = crab.children.find(c => c.label === 'rightClaw');
+      const sprite = wrapper.children.find(c => c.label === 'crabSprite');
       anim.frame += dt;
 
       if (anim.state === 'spawning') {
-        // Rise from sand
+        setCrabTexture(wrapper, 'spawning');
         anim.spawnProgress = Math.min(1, anim.spawnProgress + 0.01 * dt);
         const sandY = app.screen.height * SAND_Y_RATIO;
-        const baseY = sandY - 10;
-        wrapper.y = baseY + (1 - anim.spawnProgress) * 40;
+        wrapper.y = sandY - 10 + (1 - anim.spawnProgress) * 40;
         wrapper.alpha = anim.spawnProgress;
 
         if (anim.spawnProgress >= 1) {
           anim.state = agents[id]?.state === 'working' ? 'working' : 'idle';
         }
       } else if (anim.state === 'idle') {
-        // Slow walk back and forth + bob
+        setCrabTexture(wrapper, 'idle');
+        // Gentle bob + slow walk
         const bob = Math.sin(anim.frame * 0.03 + anim.bobPhase) * 2;
         wrapper.y = app.screen.height * SAND_Y_RATIO - 10 + bob;
 
-        // Occasional direction change
         if (Math.random() < 0.003) {
           anim.walkDir *= -1;
-          crab.scale.x = CRAB_SCALE * anim.walkDir;
+          if (sprite) sprite.scale.x = CRAB_SCALE * anim.walkDir;
         }
 
         wrapper.x += anim.walkDir * anim.walkSpeed * 0.3 * dt;
 
-        // Keep on screen
         const margin = 60;
-        if (wrapper.x < margin) { anim.walkDir = 1; crab.scale.x = CRAB_SCALE; }
-        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; crab.scale.x = -CRAB_SCALE; }
-
-        // Gentle claw wave
-        if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.05) * 2;
-        if (rightClaw) rightClaw.y = Math.sin(anim.frame * 0.05 + 1) * 2;
+        if (wrapper.x < margin) { anim.walkDir = 1; if (sprite) sprite.scale.x = CRAB_SCALE; }
+        if (wrapper.x > app.screen.width - margin) { anim.walkDir = -1; if (sprite) sprite.scale.x = -CRAB_SCALE; }
 
       } else if (anim.state === 'working') {
-        // Busy hammering — faster bob, claw movement
+        setCrabTexture(wrapper, 'working');
+        // Busy hammering bob + slight rock
         const bob = Math.sin(anim.frame * 0.08) * 1;
         wrapper.y = app.screen.height * SAND_Y_RATIO - 10 + bob;
 
-        // Hammering claws
-        if (leftClaw) {
-          leftClaw.y = Math.sin(anim.frame * 0.2) * 4;
-          leftClaw.rotation = Math.sin(anim.frame * 0.15) * 0.15;
-        }
-        if (rightClaw) {
-          rightClaw.y = Math.sin(anim.frame * 0.2 + Math.PI) * 4;
-          rightClaw.rotation = Math.sin(anim.frame * 0.15 + Math.PI) * 0.15;
-        }
-
-        // Slight rocking
-        crab.rotation = Math.sin(anim.frame * 0.1) * 0.03;
+        if (sprite) sprite.rotation = Math.sin(anim.frame * 0.1) * 0.03;
 
       } else if (anim.state === 'completed') {
-        // Victory dance — bounce + spin
+        setCrabTexture(wrapper, 'completed');
+        // Victory bounce
         const bounce = Math.abs(Math.sin(anim.frame * 0.12)) * 15;
         wrapper.y = app.screen.height * SAND_Y_RATIO - 10 - bounce;
 
-        crab.rotation = Math.sin(anim.frame * 0.15) * 0.2;
+        if (sprite) sprite.rotation = Math.sin(anim.frame * 0.15) * 0.2;
 
-        if (leftClaw) leftClaw.y = Math.sin(anim.frame * 0.3) * 6;
-        if (rightClaw) rightClaw.y = Math.sin(anim.frame * 0.3 + Math.PI) * 6;
-
-        // Transition to idle after some time
         if (anim.frame > anim.danceStart + 200) {
           anim.state = 'idle';
-          crab.rotation = 0;
+          if (sprite) sprite.rotation = 0;
         }
       }
 
@@ -391,12 +263,10 @@
       }
     }
 
-    // Animate water ripples gently
-    const ripples = bgLayer.children.filter((_, i) => i > 0 && i < bgLayer.children.length - 4);
-    for (let i = 0; i < ripples.length; i++) {
-      const r = ripples[i];
-      if (r && r.position) {
-        r.x = Math.sin(frameCount * 0.005 + i) * 3;
+    // Animate water ripples
+    for (const child of bgLayer.children) {
+      if (child.label === 'ripple') {
+        child.x = Math.sin(frameCount * 0.005 + child.y * 0.01) * 3;
       }
     }
   });
@@ -424,7 +294,6 @@
   function syncCrabs() {
     const agentIds = Object.keys(agents);
 
-    // Create missing crabs
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i];
       if (!crabSprites[id]) {
@@ -437,7 +306,6 @@
       }
     }
 
-    // Update states
     for (const [id, agent] of Object.entries(agents)) {
       const wrapper = crabSprites[id];
       if (!wrapper) continue;
@@ -449,7 +317,6 @@
         anim.state = 'working';
         anim.frame = 0;
       } else if (newState === 'idle' && anim.state === 'working') {
-        // Transition through completed dance
         anim.state = 'completed';
         anim.danceStart = anim.frame;
       } else if (newState === 'spawning' && anim.state !== 'spawning') {
@@ -472,14 +339,12 @@
     board.innerHTML = tasks.map(t => {
       const statusClass =
         t.status === 'Completed' ? 'completed' :
-        t.status === 'Claimed' || t.status === 'InProgress' ? 'claimed' :
-        'open';
+        t.status === 'Claimed' || t.status === 'InProgress' ? 'claimed' : 'open';
       const statusText =
         t.status === 'Completed' ? 'done' :
         t.status === 'Claimed' ? 'claimed' :
         t.status === 'InProgress' ? 'in progress' :
-        t.status === 'Blocked' ? 'blocked' :
-        'open';
+        t.status === 'Blocked' ? 'blocked' : 'open';
       const agentLine = t.claimed_by ? `<div class="task-agent">${t.claimed_by}</div>` : '';
       const desc = t.description.length > 100 ? t.description.slice(0, 100) + '...' : t.description;
 
@@ -498,13 +363,9 @@
     const div = document.createElement('div');
     div.className = 'log-entry';
 
-    const time = event.timestamp
-      ? new Date(event.timestamp).toLocaleTimeString()
-      : '';
-
+    const time = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '';
     const agentPart = event.agent_id
-      ? `<span class="log-agent">[${esc(event.agent_id)}]</span>`
-      : '';
+      ? `<span class="log-agent">[${esc(event.agent_id)}]</span>` : '';
 
     div.innerHTML =
       `<span class="log-time">${time}</span>` +
@@ -513,14 +374,8 @@
       `<span>${esc(event.message || '')}</span>`;
 
     entries.appendChild(div);
-
-    // Auto-scroll to bottom
     entries.scrollTop = entries.scrollHeight;
-
-    // Limit entries
-    while (entries.children.length > 200) {
-      entries.removeChild(entries.firstChild);
-    }
+    while (entries.children.length > 200) entries.removeChild(entries.firstChild);
   }
 
   // --- WebSocket ---
@@ -537,38 +392,22 @@
 
     ws.onopen = () => {
       setConnectionStatus('connected');
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     };
 
     ws.onmessage = (evt) => {
       let data;
-      try {
-        data = JSON.parse(evt.data);
-      } catch {
-        return;
-      }
+      try { data = JSON.parse(evt.data); } catch { return; }
       handleEvent(data);
     };
 
-    ws.onclose = () => {
-      setConnectionStatus('disconnected');
-      scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      setConnectionStatus('disconnected');
-    };
+    ws.onclose = () => { setConnectionStatus('disconnected'); scheduleReconnect(); };
+    ws.onerror = () => { setConnectionStatus('disconnected'); };
   }
 
   function scheduleReconnect() {
     if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connectWS();
-    }, 3000);
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWS(); }, 3000);
   }
 
   function setConnectionStatus(state) {
@@ -581,13 +420,8 @@
   function handleEvent(event) {
     switch (event.type) {
       case 'snapshot':
-        // Full state dump on connect
-        if (event.agents) {
-          agents = event.agents;
-        }
-        if (event.tasks) {
-          tasks = event.tasks;
-        }
+        if (event.agents) agents = event.agents;
+        if (event.tasks) tasks = event.tasks;
         if (event.config) {
           config = event.config;
           document.getElementById('task-label').textContent = config.task || '';
@@ -598,10 +432,7 @@
 
       case 'agent:status':
         if (event.agent_id && event.data) {
-          agents[event.agent_id] = {
-            ...agents[event.agent_id],
-            ...event.data,
-          };
+          agents[event.agent_id] = { ...agents[event.agent_id], ...event.data };
           syncCrabs();
         }
         addLogEntry(event);
@@ -610,10 +441,7 @@
       case 'task:claimed':
         if (event.task_id) {
           const task = tasks.find(t => t.id === event.task_id);
-          if (task) {
-            task.status = 'Claimed';
-            task.claimed_by = event.agent_id || null;
-          }
+          if (task) { task.status = 'Claimed'; task.claimed_by = event.agent_id || null; }
           renderTaskBoard();
         }
         addLogEntry(event);
@@ -622,50 +450,31 @@
       case 'task:completed':
         if (event.task_id) {
           const task = tasks.find(t => t.id === event.task_id);
-          if (task) {
-            task.status = 'Completed';
-            task.completed_at = event.timestamp;
-          }
+          if (task) { task.status = 'Completed'; task.completed_at = event.timestamp; }
           renderTaskBoard();
         }
         addLogEntry(event);
         break;
 
       case 'task:updated':
-        // Full task board update from backend file watcher
-        if (event.tasks) {
-          tasks = event.tasks;
-          renderTaskBoard();
-        }
+        if (event.tasks) { tasks = event.tasks; renderTaskBoard(); }
         addLogEntry(event);
         break;
 
       case 'team:spawned':
-        addLogEntry(event);
-        break;
-
       case 'agent:summary':
         addLogEntry(event);
         break;
 
       case 'event:raw':
-        // Also check if this raw event carries task/agent info
         if (event.data && event.data.event_type) {
           const rawType = event.data.event_type;
           if (rawType === 'task_claimed' && event.agent_id) {
             const agent = agents[event.agent_id];
-            if (agent) {
-              agent.state = 'working';
-              agent.current_task = event.task_id;
-              syncCrabs();
-            }
+            if (agent) { agent.state = 'working'; agent.current_task = event.task_id; syncCrabs(); }
           } else if (rawType === 'task_completed' && event.agent_id) {
             const agent = agents[event.agent_id];
-            if (agent) {
-              agent.state = 'idle';
-              agent.current_task = null;
-              syncCrabs();
-            }
+            if (agent) { agent.state = 'idle'; agent.current_task = null; syncCrabs(); }
           }
         }
         addLogEntry(event);
@@ -677,28 +486,19 @@
     }
   }
 
-  // --- Utility ---
   function esc(str) {
     const d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
   }
 
-  // --- Window resize ---
-  function onResize() {
-    drawBackground();
-    layoutCrabs();
-  }
-
   window.addEventListener('resize', () => {
-    // pixi resizes automatically via resizeTo, we just redraw bg
-    requestAnimationFrame(onResize);
+    requestAnimationFrame(() => { drawBackground(); layoutCrabs(); });
   });
 
   // --- Init ---
   drawBackground();
 
-  // Set session ID in header if element exists
   const sessionEl = document.getElementById('session-id');
   if (sessionEl && SESSION_ID) {
     sessionEl.textContent = SESSION_ID;
