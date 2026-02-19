@@ -526,6 +526,14 @@
   }
 
   function handleSocketClose() {
+    handleSocketFailure();
+  }
+
+  function handleSocketError() {
+    handleSocketFailure();
+  }
+
+  function handleSocketFailure() {
     if (sessionCompleted) {
       setConnectionStatus('completed');
       return;
@@ -538,16 +546,6 @@
     }
 
     scheduleReconnect();
-  }
-
-  function handleSocketError() {
-    if (sessionCompleted) return;
-
-    if (!wsEverConnected) {
-      enterHistoryMode('websocket unavailable; showing cached history (live status unknown)');
-    } else {
-      setConnectionStatus('disconnected');
-    }
   }
 
   function connectWS() {
