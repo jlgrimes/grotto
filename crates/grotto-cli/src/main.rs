@@ -470,6 +470,31 @@ fn infer_terminal_state_from_stream(agent: &grotto_core::AgentState, project_dir
     None
 }
 
+fn reconcile_terminal_states(project_dir: &PathBuf, grotto: &mut Grotto) -> Result<usize> {
+    let mut updated = 0usize;
+
+    for (agent_id, agent) in grotto.agents.clone() {
+        // Only reconcile non-terminal statuses.
+        let is_terminal = matches!(agent.state.as_str(), "done" | "failed" | "error");
+        if is_terminal {
+            continue;
+        }
+
+        if let Some((state, detail)) = infer_terminal_state_from_stream(&agent, project_dir)
+            && (state == "done" || state == "failed") {
+                if let Some(m) = grotto.agents.get_mut(&agent_id) {
+                    m.state = state;
+                    m.progress = detail;
+                    m.last_update = Utc::now();
+                }
+                grotto.write_agent_status(&agent_id)?;
+                updated += 1;
+            }
+    }
+
+    Ok(updated)
+}
+
 fn view_session() -> Result<()> {
     let output = Command::new("tmux")
         .args(["has-session", "-t", "grotto"])
@@ -508,7 +533,7 @@ fn view_session() -> Result<()> {
 }
 
 fn show_status(project_dir: PathBuf) -> Result<()> {
-    let grotto = Grotto::load(&project_dir)?;
+    let mut grotto = Grotto::load(&project_dir)?;
 
     println!("🪸 Grotto Status");
     println!("================");
@@ -517,6 +542,10 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
 
     // Check if tmux session exists
     let session_exists = tmux_session_exists("grotto");
+    if !session_exists {
+        let _ = reconcile_terminal_states(&project_dir, &mut grotto);
+    }
+
     let has_startup_failed_agents = grotto.agents.values().any(|a| {
         a.state == "failed" || a.state == "error" || a.progress.contains("startup_failed")
     });
