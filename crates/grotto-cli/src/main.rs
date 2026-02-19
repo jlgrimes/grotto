@@ -79,7 +79,7 @@ enum Commands {
         /// Task ID to complete
         task_id: String,
     },
-    /// Start the real-time WebSocket server + web UI
+    /// Start one-session WebSocket server + web UI (foreground; debug use)
     Serve {
         /// Port to listen on
         #[arg(long, default_value = "9091")]
@@ -107,7 +107,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum DaemonAction {
-    /// Start the daemon server (background)
+    /// Start the persistent daemon server (recommended default)
     Start {
         /// Port to listen on
         #[arg(long, default_value = "9091")]

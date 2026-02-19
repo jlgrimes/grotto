@@ -134,8 +134,8 @@ When agents finish (tmux session gone or `grotto wait` returns):
 
 ### 6. Clean up
 ```bash
-grotto kill all  # if session still alive
-# serve process exits when you kill it
+grotto kill all      # if session still alive
+grotto daemon stop   # stop portal when done (optional if you keep it running)
 ```
 
 ## Best Practices
@@ -145,7 +145,8 @@ grotto kill all  # if session still alive
 - **Let agents self-organize** — they'll divide work via `grotto steer` messages to each other
 - **Write a plan doc first** — put a `PLAN.md` or similar in the project dir so agents have a spec to read
 - **Monitor with `grotto status`** — check the task board to see who's doing what
-- **Always start `grotto serve`** — give the user real-time visibility
+- **Always start `grotto daemon start`** — this is the reliable default for real-time visibility
+- Use `grotto serve` only for local debugging (foreground, non-persistent)
 - **Kill when done** — always `grotto kill all` after the work is complete
 
 ## Architecture
@@ -153,7 +154,7 @@ grotto kill all  # if session still alive
 ```
 You (OpenClaw agent / team lead)
   ├── grotto spawn → tmux session with N panes
-  ├── grotto serve → WS server + web UI on :9090
+  ├── grotto daemon start → persistent WS server + web UI on :9091
   ├── grotto steer → tmux send-keys to specific pane
   ├── grotto log   → tmux capture-pane output
   └── grotto kill  → graceful shutdown then kill

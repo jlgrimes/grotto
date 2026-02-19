@@ -43,7 +43,7 @@ Or tell your OpenClaw agent:
 
 Your OpenClaw agent spawns Claude Code sessions as tmux panes. They self-organize via a shared task board, communicate with each other, and ship code in parallel.
 
-## Quick Start
+## Quick Start (recommended, persistent)
 
 ```bash
 cd /path/to/project
@@ -51,8 +51,11 @@ cd /path/to/project
 # Spawn 3 agents
 grotto spawn 3 "Build a REST API with auth, posts CRUD, and tests"
 
-# Start the real-time web portal (daemon mode)
-grotto daemon start
+# Start the persistent web daemon (recommended default)
+grotto daemon start --port 9091
+
+# Optional: check daemon health
+# grotto daemon status
 
 # Watch agents work in tmux
 grotto view
@@ -60,6 +63,8 @@ grotto view
 # Check status
 grotto status
 ```
+
+> Use `grotto serve` only for local debugging. For normal use, always run `grotto daemon start` so the portal survives shell/process interruptions.
 
 ## Commands
 
@@ -83,8 +88,8 @@ grotto status
 - `grotto daemon stop` — Stop the daemon
 - `grotto daemon status` — Check daemon status and list sessions
 
-### Single-Session Server
-- `grotto serve [--port 9091]` — Run server for one session (foreground)
+### Single-Session Server (debug only)
+- `grotto serve [--port 9091]` — Run server for one session (foreground, non-persistent)
 
 ## Web UI
 
@@ -108,8 +113,8 @@ grotto/
 ├── crates/
 │   ├── grotto-core/    # Task board, state, events, daemon registry
 │   ├── grotto-cli/     # CLI binary
-│   └── grotto-serve/   # HTTP/WebSocket server + file watcher
-└── web/                # Pixi.js frontend (served from disk)
+│   └── grotto-serve/   # HTTP/WebSocket server + file watcher + embedded UI assets
+└── web/                # Source web assets (synced into grotto-serve/web for embedding)
 ```
 
 ## License
