@@ -67,6 +67,58 @@ pub struct ConfigInfo {
     pub project_dir: String,
 }
 
+impl WsEvent {
+    fn base(event_type: impl Into<String>, timestamp: impl Into<String>) -> Self {
+        Self {
+            event_type: event_type.into(),
+            timestamp: timestamp.into(),
+            agent_id: None,
+            task_id: None,
+            message: None,
+            data: None,
+            agents: None,
+            tasks: None,
+            config: None,
+            session_active: None,
+            session_status: None,
+        }
+    }
+
+    fn snapshot(
+        message: impl Into<String>,
+        agents: HashMap<String, AgentState>,
+        tasks: Vec<TaskInfo>,
+        config: Option<ConfigInfo>,
+        session_active: bool,
+        session_status: impl Into<String>,
+    ) -> Self {
+        let mut event = Self::base("snapshot", chrono::Utc::now().to_rfc3339());
+        event.message = Some(message.into());
+        event.agents = Some(agents);
+        event.tasks = Some(tasks);
+        event.config = config;
+        event.session_active = Some(session_active);
+        event.session_status = Some(session_status.into());
+        event
+    }
+
+    fn message_event(
+        event_type: impl Into<String>,
+        timestamp: impl Into<String>,
+        agent_id: Option<String>,
+        task_id: Option<String>,
+        message: Option<String>,
+        data: Option<serde_json::Value>,
+    ) -> Self {
+        let mut event = Self::base(event_type, timestamp);
+        event.agent_id = agent_id;
+        event.task_id = task_id;
+        event.message = message;
+        event.data = data;
+        event
+    }
+}
+
 fn detect_session_liveness(session_id: &str, agent_count: usize) -> (bool, String) {
     let snapshots = monitor::capture_all_agents(session_id, agent_count);
     if snapshots.is_empty() {
@@ -190,8 +242,8 @@ impl DaemonState {
 
                 // Enrich agents with live tmux phase data
                 let mut agents = g.agents;
-                let mut session_active = Some(false);
-                let mut session_status = Some("completed".to_string());
+                let mut session_active = false;
+                let mut session_status = "completed".to_string();
 
                 if let Some(session_id) = &g.config.session_id {
                     let snapshots = monitor::capture_all_agents(session_id, g.config.agent_count);
@@ -202,41 +254,31 @@ impl DaemonState {
                     }
 
                     let (active, status) = detect_session_liveness(session_id, g.config.agent_count);
-                    session_active = Some(active);
-                    session_status = Some(status);
+                    session_active = active;
+                    session_status = status;
                 }
 
-                WsEvent {
-                    event_type: "snapshot".to_string(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    agent_id: None,
-                    task_id: None,
-                    message: Some("Full state snapshot".to_string()),
-                    data: None,
-                    agents: Some(agents),
-                    tasks: Some(tasks),
-                    config: Some(ConfigInfo {
+                WsEvent::snapshot(
+                    "Full state snapshot",
+                    agents,
+                    tasks,
+                    Some(ConfigInfo {
                         agent_count: g.config.agent_count,
                         task: g.config.task.clone(),
                         project_dir: g.config.project_dir.display().to_string(),
                     }),
                     session_active,
                     session_status,
-                }
+                )
             }
-            Err(_) => WsEvent {
-                event_type: "snapshot".to_string(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                agent_id: None,
-                task_id: None,
-                message: Some("No grotto state found".to_string()),
-                data: None,
-                agents: Some(HashMap::new()),
-                tasks: Some(Vec::new()),
-                config: None,
-                session_active: Some(false),
-                session_status: Some("not_found".to_string()),
-            },
+            Err(_) => WsEvent::snapshot(
+                "No grotto state found",
+                HashMap::new(),
+                Vec::new(),
+                None,
+                false,
+                "not_found",
+            ),
         }
     }
 }
@@ -814,23 +856,20 @@ async fn run_tmux_monitor(
             consecutive_failures += 1;
             if consecutive_failures > 5 {
                 let now = chrono::Utc::now();
-                let ws_event = WsEvent {
-                    event_type: "session:completed".to_string(),
-                    timestamp: now.to_rfc3339(),
-                    agent_id: None,
-                    task_id: None,
-                    message: Some("Session completed (tmux session ended)".to_string()),
-                    data: Some(serde_json::json!({
+                let mut ws_event = WsEvent::message_event(
+                    "session:completed",
+                    now.to_rfc3339(),
+                    None,
+                    None,
+                    Some("Session completed (tmux session ended)".to_string()),
+                    Some(serde_json::json!({
                         "reason": "tmux_session_ended",
                         "completed_at": now.to_rfc3339(),
                         "session_id": session_id,
                     })),
-                    agents: None,
-                    tasks: None,
-                    config: None,
-                    session_active: Some(false),
-                    session_status: Some("completed".to_string()),
-                };
+                );
+                ws_event.session_active = Some(false);
+                ws_event.session_status = Some("completed".to_string());
 
                 if let Ok(json) = serde_json::to_string(&ws_event) {
                     let _ = tx.send(json);
@@ -852,25 +891,17 @@ async fn run_tmux_monitor(
             if changed {
                 prev_phases.insert(snap.agent_id.clone(), snap.phase.clone());
 
-                let ws_event = WsEvent {
-                    event_type: "agent:phase".to_string(),
-                    timestamp: snap.timestamp.to_rfc3339(),
-                    agent_id: Some(snap.agent_id.clone()),
-                    task_id: None,
-                    message: Some(format!(
-                        "Agent {} phase: {}",
-                        snap.agent_id, snap.phase
-                    )),
-                    data: Some(serde_json::json!({
+                let ws_event = WsEvent::message_event(
+                    "agent:phase",
+                    snap.timestamp.to_rfc3339(),
+                    Some(snap.agent_id.clone()),
+                    None,
+                    Some(format!("Agent {} phase: {}", snap.agent_id, snap.phase)),
+                    Some(serde_json::json!({
                         "phase": snap.phase.to_string(),
                         "last_activity": snap.last_activity_line,
                     })),
-                    agents: None,
-                    tasks: None,
-                    config: None,
-                    session_active: None,
-                    session_status: None,
-                };
+                );
 
                 if let Ok(json) = serde_json::to_string(&ws_event) {
                     let _ = tx.send(json);
@@ -928,19 +959,14 @@ async fn run_file_watcher(
                             "events.jsonl" => {
                                 let new_events = read_new_events(path, &event_line_count).await;
                                 for evt in new_events {
-                                    let ws_event = WsEvent {
-                                        event_type: "event:raw".to_string(),
-                                        timestamp: evt.timestamp.to_rfc3339(),
-                                        agent_id: evt.agent_id,
-                                        task_id: evt.task_id,
-                                        message: evt.message,
-                                        data: Some(evt.data),
-                                        agents: None,
-                                        tasks: None,
-                                        config: None,
-                                        session_active: None,
-                                        session_status: None,
-                                    };
+                                    let ws_event = WsEvent::message_event(
+                                        "event:raw",
+                                        evt.timestamp.to_rfc3339(),
+                                        evt.agent_id,
+                                        evt.task_id,
+                                        evt.message,
+                                        Some(evt.data),
+                                    );
                                     if let Ok(json) = serde_json::to_string(&ws_event) {
                                         let _ = tx.send(json);
                                     }
@@ -950,24 +976,14 @@ async fn run_file_watcher(
                                 if let Ok(content) = tokio::fs::read_to_string(path).await
                                     && let Ok(agent) = serde_json::from_str::<AgentState>(&content)
                                     {
-                                        let ws_event = WsEvent {
-                                            event_type: "agent:status".to_string(),
-                                            timestamp: chrono::Utc::now().to_rfc3339(),
-                                            agent_id: Some(agent.id.clone()),
-                                            task_id: agent.current_task.clone(),
-                                            message: Some(format!(
-                                                "Agent {} is now {}",
-                                                agent.id, agent.state
-                                            )),
-                                            data: Some(
-                                                serde_json::to_value(&agent).unwrap_or_default(),
-                                            ),
-                                            agents: None,
-                                            tasks: None,
-                                            config: None,
-                                            session_active: None,
-                                            session_status: None,
-                                        };
+                                        let ws_event = WsEvent::message_event(
+                                            "agent:status",
+                                            chrono::Utc::now().to_rfc3339(),
+                                            Some(agent.id.clone()),
+                                            agent.current_task.clone(),
+                                            Some(format!("Agent {} is now {}", agent.id, agent.state)),
+                                            Some(serde_json::to_value(&agent).unwrap_or_default()),
+                                        );
                                         if let Ok(json) = serde_json::to_string(&ws_event) {
                                             let _ = tx.send(json);
                                         }
@@ -975,19 +991,15 @@ async fn run_file_watcher(
                             }
                             "tasks.md" => {
                                 let tasks = parse_task_board(path);
-                                let ws_event = WsEvent {
-                                    event_type: "task:updated".to_string(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    agent_id: None,
-                                    task_id: None,
-                                    message: Some("Task board updated".to_string()),
-                                    data: Some(serde_json::to_value(&tasks).unwrap_or_default()),
-                                    agents: None,
-                                    tasks: Some(tasks),
-                                    config: None,
-                                    session_active: None,
-                                    session_status: None,
-                                };
+                                let mut ws_event = WsEvent::message_event(
+                                    "task:updated",
+                                    chrono::Utc::now().to_rfc3339(),
+                                    None,
+                                    None,
+                                    Some("Task board updated".to_string()),
+                                    Some(serde_json::to_value(&tasks).unwrap_or_default()),
+                                );
+                                ws_event.tasks = Some(tasks);
                                 if let Ok(json) = serde_json::to_string(&ws_event) {
                                     let _ = tx.send(json);
                                 }
@@ -1122,6 +1134,23 @@ mod tests {
         assert!(json.contains("agent-1"));
         assert!(!json.contains("task_id"));
         assert!(!json.contains("\"data\""));
+    }
+
+    #[test]
+    fn test_message_event_helper_serialization() {
+        let event = WsEvent::message_event(
+            "event:raw",
+            "2025-01-01T00:00:00Z",
+            Some("agent-1".to_string()),
+            None,
+            None,
+            Some(serde_json::json!({"ok": true})),
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"event:raw\""));
+        assert!(json.contains("agent-1"));
+        assert!(!json.contains("\"message\""));
     }
 
     #[test]
