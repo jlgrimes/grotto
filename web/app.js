@@ -19,6 +19,7 @@
   let ws = null;
   let reconnectTimer = null;
   let sessionCompleted = false;
+  let historyMode = false;
   let wsEverConnected = false;
   let historyLoaded = false;
 
@@ -432,9 +433,8 @@
         handleEvent(normalizeEvent(raw), { fromHistory: true });
       }
 
-      if (events.length > 0) {
-        setSessionCompleted('showing historical timeline');
-      }
+      // History alone does not imply completion; completion is only set from
+      // explicit signals (snapshot/session status or session:completed event).
     } catch {
       // no-op: historical data is best effort when WS is unavailable
     }
@@ -447,15 +447,17 @@
     reconnectTimer = null;
   }
 
-  function completeFromHistory(reason) {
+  function enterHistoryMode(reason) {
     // Keep fallback behavior centralized so onclose/onerror stay in sync.
     loadEventHistory();
-    setSessionCompleted(reason || 'websocket unavailable; loaded history');
+    setHistoryMode(reason || 'websocket unavailable; showing cached history (live status unknown)');
   }
 
   function handleSocketOpen() {
     wsEverConnected = true;
+    historyMode = false;
     setConnectionStatus('connected');
+    setBanner('');
     clearReconnectTimer();
   }
 
@@ -466,11 +468,11 @@
     }
 
     if (!wsEverConnected) {
-      completeFromHistory('websocket unavailable; loaded history');
-      return;
+      enterHistoryMode('websocket unavailable; showing cached history (live status unknown)');
+    } else {
+      setConnectionStatus('disconnected');
     }
 
-    setConnectionStatus('disconnected');
     scheduleReconnect();
   }
 
@@ -478,11 +480,10 @@
     if (sessionCompleted) return;
 
     if (!wsEverConnected) {
-      completeFromHistory('websocket unavailable; loaded history');
-      return;
+      enterHistoryMode('websocket unavailable; showing cached history (live status unknown)');
+    } else {
+      setConnectionStatus('disconnected');
     }
-
-    setConnectionStatus('disconnected');
   }
 
   function connectWS() {
@@ -493,7 +494,8 @@
       ws = new WebSocket(WS_URL);
     } catch (e) {
       setConnectionStatus('disconnected');
-      completeFromHistory('websocket unavailable; loaded history');
+      enterHistoryMode('websocket unavailable; showing cached history (live status unknown)');
+      scheduleReconnect();
       return;
     }
 
@@ -520,26 +522,45 @@
     el.className = state;
   }
 
+  function setBanner(message) {
+    const banner = document.getElementById('session-completed-banner');
+    if (!banner) return;
+
+    if (!message) {
+      banner.classList.add('hidden');
+      banner.classList.remove('history');
+      return;
+    }
+
+    banner.classList.remove('hidden');
+    banner.textContent = message;
+  }
+
   function closeSocketIfOpen() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close();
     }
   }
 
+  function setHistoryMode(reason) {
+    if (sessionCompleted) return;
+    historyMode = true;
+    setConnectionStatus('history');
+    const banner = document.getElementById('session-completed-banner');
+    if (banner) banner.classList.add('history');
+    setBanner(`History mode — ${reason || 'showing cached timeline while live status is unknown'}`);
+  }
+
   function setSessionCompleted(reason) {
     sessionCompleted = true;
+    historyMode = false;
     clearReconnectTimer();
     closeSocketIfOpen();
 
     setConnectionStatus('completed');
-
     const banner = document.getElementById('session-completed-banner');
-    if (banner) {
-      banner.classList.remove('hidden');
-      if (reason) {
-        banner.textContent = `Session completed — ${reason}`;
-      }
-    }
+    if (banner) banner.classList.remove('history');
+    setBanner(`Session completed — ${reason || 'session finished'}`);
   }
 
   // --- Event Handling ---

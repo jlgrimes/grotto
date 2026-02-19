@@ -81,6 +81,11 @@ body {
   color: var(--green);
 }
 
+#connection-status.history {
+  background: #2a2a1a;
+  color: var(--yellow);
+}
+
 #task-label {
   font-size: 12px;
   color: var(--text-dim);
@@ -102,6 +107,12 @@ body {
 
 #session-completed-banner.hidden {
   display: none;
+}
+
+#session-completed-banner.history {
+  background: #2a2a1a;
+  color: var(--yellow);
+  border-bottom: 1px solid #46461f;
 }
 
 #stage-container {
