@@ -390,6 +390,64 @@
     return event?.type || event?.event_type || '';
   }
 
+  function safeJsonSnippet(value, maxLen) {
+    const limit = maxLen || 160;
+    try {
+      const seen = new WeakSet();
+      const json = JSON.stringify(value, (k, v) => {
+        if (v && typeof v === 'object') {
+          if (seen.has(v)) return '[Circular]';
+          seen.add(v);
+        }
+        return v;
+      });
+      if (!json) return '';
+      return json.length > limit ? `${json.slice(0, limit)}…` : json;
+    } catch {
+      return '';
+    }
+  }
+
+  function compactDetailFromData(data) {
+    if (!data || typeof data !== 'object') return '';
+
+    const preferredKeys = ['event_type', 'type', 'phase', 'task_id', 'last_activity', 'reason', 'status', 'agent_id'];
+    const details = [];
+    for (const key of preferredKeys) {
+      const value = data[key];
+      if (value === undefined || value === null || value === '') continue;
+      details.push(`${key}=${String(value)}`);
+      if (details.length >= 4) break;
+    }
+
+    if (details.length > 0) return details.join(' · ');
+
+    const snippet = safeJsonSnippet(data, 180);
+    return snippet;
+  }
+
+  function hasMeaningfulMessage(event) {
+    const message = String(event?.message || '').trim();
+    if (!message) return false;
+
+    const kind = String(getEventKind(event) || '').trim().toLowerCase();
+    const normalized = message.toLowerCase();
+
+    if (kind && (normalized === kind || normalized === kind.replace(/[:_]/g, ' '))) {
+      return false;
+    }
+
+    const genericMessages = new Set([
+      'ok',
+      'updated',
+      'status update',
+      'event received',
+      'done',
+    ]);
+
+    return !genericMessages.has(normalized);
+  }
+
   function addLogEntry(event) {
     const entries = document.getElementById('log-entries');
     const div = document.createElement('div');
@@ -399,11 +457,17 @@
     const agentPart = event.agent_id
       ? `<span class="log-agent">[${esc(event.agent_id)}]</span>` : '';
 
+    const message = hasMeaningfulMessage(event) ? String(event.message).trim() : '';
+    const detail = compactDetailFromData(event?.data);
+    const textPart = message ? `<span class="log-text">${esc(message)}</span>` : '';
+    const detailPart = detail ? `<span class="log-detail">${esc(detail)}</span>` : '';
+
     div.innerHTML =
       `<span class="log-time">${time}</span>` +
       `<span class="log-type">${esc(getEventKind(event) || '?')}</span>` +
       agentPart +
-      `<span>${esc(event.message || '')}</span>`;
+      textPart +
+      detailPart;
 
     entries.appendChild(div);
     entries.scrollTop = entries.scrollHeight;

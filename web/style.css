@@ -226,3 +226,12 @@ body {
   color: var(--water-light);
   margin-right: 8px;
 }
+
+.log-entry .log-text {
+  color: var(--text-dim);
+}
+
+.log-entry .log-detail {
+  color: #7f8ea0;
+  margin-left: 8px;
+}
