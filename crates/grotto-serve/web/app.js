@@ -431,10 +431,6 @@
       for (const raw of events) {
         handleEvent(normalizeEvent(raw), { fromHistory: true });
       }
-
-      if (events.length > 0) {
-        setSessionCompleted('showing historical timeline');
-      }
     } catch {
       // no-op: historical data is best effort when WS is unavailable
     }
@@ -447,10 +443,11 @@
     reconnectTimer = null;
   }
 
-  function completeFromHistory(reason) {
+  function completeFromHistory() {
     // Keep fallback behavior centralized so onclose/onerror stay in sync.
     loadEventHistory();
-    setSessionCompleted(reason || 'websocket unavailable; loaded history');
+    setConnectionStatus('disconnected');
+    scheduleReconnect();
   }
 
   function handleSocketOpen() {
