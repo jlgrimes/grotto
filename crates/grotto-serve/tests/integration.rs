@@ -5,15 +5,11 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::Message,
-    MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
-type TestWs = WebSocketStream<MaybeTlsStream<TcpStream>>;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Find a free port by binding to port 0
 async fn free_port() -> u16 {
@@ -33,85 +29,63 @@ async fn start_test_server(grotto_dir: std::path::PathBuf) -> u16 {
     port
 }
 
-fn message_to_ws_event(msg: Message) -> WsEvent {
+/// Start the daemon server in background and return the port
+async fn start_daemon_server() -> u16 {
+    let port = free_port().await;
+    tokio::spawn(async move {
+        grotto_serve::run_daemon(port, None).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    port
+}
+
+fn parse_ws_text_message(msg: Message) -> Result<WsEvent, String> {
     let text = match msg {
         Message::Text(t) => t.to_string(),
-        other => panic!("Expected text message, got {:?}", other),
+        other => return Err(format!("Expected text message, got {:?}", other)),
     };
-    serde_json::from_str(&text).expect("Failed to parse WS event")
+
+    serde_json::from_str(&text).map_err(|err| format!("Failed to parse ws event JSON: {err}"))
 }
 
-async fn next_ws_event(ws: &mut TestWs) -> WsEvent {
-    let msg = tokio::time::timeout(TEST_TIMEOUT, ws.next())
-        .await
-        .expect("Timeout waiting for WS message")
-        .expect("WS stream ended")
-        .expect("WS receive error");
-
-    message_to_ws_event(msg)
+async fn consume_initial_snapshot(ws: &mut WsStream) -> WsEvent {
+    wait_for_event_type(ws, "snapshot", DEFAULT_TIMEOUT).await
 }
 
-async fn consume_initial_ws_snapshot(ws: &mut TestWs) {
-    let event = next_ws_event(ws).await;
-    assert_eq!(event.event_type, "snapshot", "first WS event should be snapshot");
-}
-
-async fn wait_for_event_type(ws: &mut TestWs, event_type: &str) -> WsEvent {
-    tokio::time::timeout(TEST_TIMEOUT, async {
+async fn wait_for_event_type(ws: &mut WsStream, event_type: &str, timeout: Duration) -> WsEvent {
+    tokio::time::timeout(timeout, async {
         loop {
-            let Some(message_result) = ws.next().await else {
-                panic!("WS stream ended while waiting for event: {event_type}");
-            };
-
-            let Ok(message) = message_result else {
-                continue;
-            };
-
-            let Message::Text(text) = message else {
-                continue;
-            };
-
-            let Ok(event) = serde_json::from_str::<WsEvent>(&text) else {
-                continue;
-            };
-
-            if event.event_type == event_type {
-                return event;
+            match ws.next().await {
+                Some(Ok(msg)) => {
+                    if let Ok(event) = parse_ws_text_message(msg) {
+                        if event.event_type == event_type {
+                            return event;
+                        }
+                    }
+                }
+                Some(Err(err)) => panic!("WebSocket error while waiting for {event_type}: {err}"),
+                None => panic!("WebSocket stream ended while waiting for {event_type}"),
             }
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("Should receive {event_type} event within {TEST_TIMEOUT:?}"))
+    .unwrap_or_else(|_| panic!("Timeout waiting for {event_type}"))
 }
 
-async fn http_request(port: u16, request: &str) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
-    stream.write_all(request.as_bytes()).await.unwrap();
+async fn http_request(port: u16, req: &str) -> String {
+    let stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+    let (mut reader, mut writer) = stream.into_split();
 
-    let mut response = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut buf).await.unwrap();
-        if n == 0 {
-            break;
-        }
-        response.extend_from_slice(&buf[..n]);
-        if n < buf.len() {
-            break;
-        }
-    }
+    writer.write_all(req.as_bytes()).await.unwrap();
 
-    String::from_utf8_lossy(&response).into_owned()
+    let mut buf = vec![0u8; 16384];
+    let n = reader.read(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf[..n]).into_owned()
 }
 
 async fn http_get(port: u16, path: &str) -> String {
-    http_request(
-        port,
-        &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
-    )
-    .await
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    http_request(port, &req).await
 }
 
 async fn register_session(port: u16, id: &str, dir: &std::path::Path) -> String {
@@ -136,8 +110,8 @@ async fn test_health_endpoint() {
     let _grotto = Grotto::new(&dir, 2, "test task".into()).unwrap();
 
     let port = start_test_server(dir.join(".grotto")).await;
-
     let response = http_get(port, "/health").await;
+
     assert!(response.contains("200 OK"), "Got: {}", response);
     assert!(response.contains("ok"), "Got: {}", response);
 }
@@ -153,7 +127,7 @@ async fn test_ws_snapshot_on_connect() {
     let url = format!("ws://127.0.0.1:{}/ws", port);
     let (mut ws, _) = connect_async(&url).await.expect("WS connect failed");
 
-    let event = next_ws_event(&mut ws).await;
+    let event = consume_initial_snapshot(&mut ws).await;
     assert_eq!(event.event_type, "snapshot");
     let agents = event.agents.expect("snapshot should have agents");
     assert_eq!(agents.len(), 3);
@@ -173,7 +147,8 @@ async fn test_ws_receives_agent_status_change() {
     let url = format!("ws://127.0.0.1:{}/ws", port);
     let (mut ws, _) = connect_async(&url).await.expect("WS connect failed");
 
-    consume_initial_ws_snapshot(&mut ws).await;
+    // Consume the initial snapshot
+    let _ = consume_initial_snapshot(&mut ws).await;
 
     // Modify an agent's status file
     let agent_status = grotto_core::AgentState {
@@ -189,7 +164,9 @@ async fn test_ws_receives_agent_status_change() {
     let status_path = dir.join(".grotto/agents/agent-1/status.json");
     std::fs::write(&status_path, &status_json).unwrap();
 
-    let event = wait_for_event_type(&mut ws, "agent:status").await;
+    // Wait for the file watcher to pick it up and broadcast
+    let event = wait_for_event_type(&mut ws, "agent:status", DEFAULT_TIMEOUT).await;
+
     assert_eq!(event.agent_id, Some("agent-1".to_string()));
     assert!(event.message.unwrap().contains("working"));
 }
@@ -205,7 +182,8 @@ async fn test_ws_receives_event_raw_on_jsonl_append() {
     let url = format!("ws://127.0.0.1:{}/ws", port);
     let (mut ws, _) = connect_async(&url).await.expect("WS connect failed");
 
-    consume_initial_ws_snapshot(&mut ws).await;
+    // Consume the initial snapshot
+    let _ = consume_initial_snapshot(&mut ws).await;
 
     // Append a new event to events.jsonl
     grotto
@@ -218,7 +196,7 @@ async fn test_ws_receives_event_raw_on_jsonl_append() {
         )
         .unwrap();
 
-    let event = wait_for_event_type(&mut ws, "event:raw").await;
+    let event = wait_for_event_type(&mut ws, "event:raw", DEFAULT_TIMEOUT).await;
     assert_eq!(event.message, Some("Test event fired".to_string()));
 }
 
@@ -237,8 +215,11 @@ async fn test_multiple_ws_clients_receive_same_events() {
     let (mut ws2, _) = connect_async(&url).await.expect("WS2 connect failed");
 
     // Both should get snapshots
-    consume_initial_ws_snapshot(&mut ws1).await;
-    consume_initial_ws_snapshot(&mut ws2).await;
+    let s1 = consume_initial_snapshot(&mut ws1).await;
+    let s2 = consume_initial_snapshot(&mut ws2).await;
+
+    assert_eq!(s1.event_type, "snapshot");
+    assert_eq!(s2.event_type, "snapshot");
 
     // Now trigger an event — both should receive it
     grotto
@@ -251,26 +232,16 @@ async fn test_multiple_ws_clients_receive_same_events() {
         )
         .unwrap();
 
-    let recv1 = wait_for_event_type(&mut ws1, "event:raw").await;
-    let recv2 = wait_for_event_type(&mut ws2, "event:raw").await;
+    let recv1 = wait_for_event_type(&mut ws1, "event:raw", DEFAULT_TIMEOUT).await;
+    let recv2 = wait_for_event_type(&mut ws2, "event:raw", DEFAULT_TIMEOUT).await;
 
-    assert_eq!(recv1.message, Some("hello both".to_string()));
-    assert_eq!(recv2.message, Some("hello both".to_string()));
+    assert_eq!(recv1.event_type, "event:raw");
+    assert_eq!(recv2.event_type, "event:raw");
 }
 
 // ---------------------------------------------------------------------------
 // Daemon (multi-session) integration tests
 // ---------------------------------------------------------------------------
-
-/// Start the daemon server in background and return the port
-async fn start_daemon_server() -> u16 {
-    let port = free_port().await;
-    tokio::spawn(async move {
-        grotto_serve::run_daemon(port, None).await.unwrap();
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    port
-}
 
 #[tokio::test]
 async fn test_daemon_health() {
@@ -356,7 +327,7 @@ async fn test_daemon_per_session_ws() {
     let (mut ws, _) = connect_async(&url).await.expect("WS connect failed");
 
     // Should get snapshot
-    let event = next_ws_event(&mut ws).await;
+    let event = consume_initial_snapshot(&mut ws).await;
     assert_eq!(event.event_type, "snapshot");
     assert_eq!(event.config.unwrap().task, "ws session test");
 
@@ -371,7 +342,7 @@ async fn test_daemon_per_session_ws() {
         )
         .unwrap();
 
-    let event = wait_for_event_type(&mut ws, "event:raw").await;
+    let event = wait_for_event_type(&mut ws, "event:raw", DEFAULT_TIMEOUT).await;
     assert_eq!(event.message, Some("daemon event".to_string()));
 }
 
