@@ -122,11 +122,13 @@ Each session gets a semantic ID (e.g., `crimson-coral-tide`) used as the URL rou
 
 ## CI
 
-GitHub Actions runs lightweight Rust checks on every push and pull request to catch regressions early:
+GitHub Actions runs lightweight Rust and frontend syntax checks on every push and pull request to catch regressions early:
 
 - `cargo fmt --all -- --check` (formatting)
 - `cargo clippy --all-targets -- -D warnings` (linting with warnings treated as errors)
 - `cargo test --workspace` (workspace test suite)
+- `node --check web/app.js` (frontend JavaScript syntax)
+- `node --check web/sandbox.js` (frontend sandbox JavaScript syntax)
 
 The workflow uses standard cargo dependency/build caching so repeat runs are faster.
 

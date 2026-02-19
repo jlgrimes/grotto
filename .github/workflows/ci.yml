@@ -12,6 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js (LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -28,3 +33,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Check web/app.js syntax
+        run: node --check web/app.js
+
+      - name: Check web/sandbox.js syntax
+        run: node --check web/sandbox.js
