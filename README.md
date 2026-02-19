@@ -66,10 +66,24 @@ grotto status
 
 > Use `grotto serve` only for local debugging. For normal use, always run `grotto daemon start` so the portal survives shell/process interruptions.
 
+### Spawn mission templates (optional)
+
+```bash
+# Prioritize fast triage + targeted fixes
+grotto spawn 3 "Fix flaky checkout failures" --template bugfix-swarm
+
+# Focus on improving tests and reliability
+grotto spawn 4 "Harden auth and billing test coverage" --template test-hardening
+
+# Deliver one safe migration slice at a time
+grotto spawn 3 "Migrate user settings API to v2" --template migration-slice
+```
+
 ## Commands
 
 ### Agent Management
 - `grotto spawn <N> "<task>"` — Spawn N agents in a tmux session
+- `grotto spawn <N> "<task>" --template <bugfix-swarm|test-hardening|migration-slice>` — Spawn agents with a structured mission template
 - `grotto view` — Attach to the tmux session
 - `grotto status` — Show task board and agent states
 - `grotto steer <agent> "<message>"` — Message a specific agent

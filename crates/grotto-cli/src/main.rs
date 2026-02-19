@@ -27,6 +27,9 @@ enum Commands {
         count: usize,
         /// Main task description
         task: String,
+        /// Optional mission template to structure the task prompt
+        #[arg(long)]
+        template: Option<String>,
     },
     /// Attach to the grotto tmux session
     View,
@@ -134,7 +137,11 @@ fn main() {
 
 fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
     match command {
-        Commands::Spawn { count, task } => spawn_agents(project_dir, count, task),
+        Commands::Spawn {
+            count,
+            task,
+            template,
+        } => spawn_agents(project_dir, count, task, template),
         Commands::View => view_session(),
         Commands::Status => show_status(project_dir),
         Commands::Steer { agent, message } => steer_agent(project_dir, agent, message),
@@ -151,7 +158,62 @@ fn run_command(command: Commands, project_dir: PathBuf) -> Result<()> {
     }
 }
 
-fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> {
+const SUPPORTED_SPAWN_TEMPLATES: [&str; 3] = ["bugfix-swarm", "test-hardening", "migration-slice"];
+
+fn render_spawn_template(template: &str, task: &str) -> Result<String> {
+    let rendered = match template {
+        "bugfix-swarm" => format!(
+            "Mission template: bugfix-swarm\n\
+             Primary objective: rapidly identify, isolate, and fix high-impact defects with minimal risk.\n\
+             Checklist:\n\
+             1) Reproduce reported bugs and capture clear failure evidence.\n\
+             2) Triage and prioritize by user impact and blast radius.\n\
+             3) Ship small, targeted fixes with regression tests.\n\
+             4) Verify fixes end-to-end and summarize remaining risks.\n\n\
+             User task (must remain in scope):\n{task}"
+        ),
+        "test-hardening" => format!(
+            "Mission template: test-hardening\n\
+             Primary objective: improve confidence and stability by strengthening automated test coverage and quality gates.\n\
+             Checklist:\n\
+             1) Identify fragile or untested critical paths.\n\
+             2) Add focused unit/integration tests for core behaviors and edge cases.\n\
+             3) Reduce flaky tests and tighten assertions.\n\
+             4) Document new test strategy and any known gaps.\n\n\
+             User task (must remain in scope):\n{task}"
+        ),
+        "migration-slice" => format!(
+            "Mission template: migration-slice\n\
+             Primary objective: deliver an incremental migration slice that is safe, reversible, and production-oriented.\n\
+             Checklist:\n\
+             1) Define migration boundaries and success criteria for one vertical slice.\n\
+             2) Implement compatibility shims or adapters as needed.\n\
+             3) Validate backwards compatibility and rollout safety.\n\
+             4) Capture follow-up slices and de-risking steps.\n\n\
+             User task (must remain in scope):\n{task}"
+        ),
+        _ => {
+            return Err(grotto_core::GrottoError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Unknown template '{template}'. Valid templates: {}",
+                    SUPPORTED_SPAWN_TEMPLATES.join(", ")
+                ),
+            )));
+        }
+    };
+
+    Ok(rendered)
+}
+
+fn build_spawn_task(task: &str, template: Option<&str>) -> Result<String> {
+    match template {
+        Some(tpl) => render_spawn_template(tpl, task),
+        None => Ok(task.to_string()),
+    }
+}
+
+fn spawn_agents(project_dir: PathBuf, count: usize, task: String, template: Option<String>) -> Result<()> {
     // Check dependencies before doing anything
     if let Err(missing) = Grotto::check_dependencies() {
         eprintln!("❌ Missing required dependencies: {}", missing.join(", "));
@@ -177,10 +239,15 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String) -> Result<()> 
         .args(["kill-session", "-t", "grotto"])
         .output();
 
+    let final_task = build_spawn_task(&task, template.as_deref())?;
+
     println!("🪸 Spawning {} agents for task: {}", count, task);
+    if let Some(template_name) = template {
+        println!("   Using template: {}", template_name);
+    }
 
     // Initialize grotto project (generates session ID)
-    let grotto = Grotto::new(&project_dir, count, task)?;
+    let grotto = Grotto::new(&project_dir, count, final_task)?;
     let session_id = grotto.config.session_id.as_deref().unwrap_or("unknown");
 
     // Create new tmux session with first agent
@@ -1146,4 +1213,53 @@ fn find_web_dir() -> Option<PathBuf> {
         return cwd_web.canonicalize().ok();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_spawn_task, render_spawn_template};
+
+    #[test]
+    fn bugfix_swarm_template_contains_expected_fragments() {
+        let task = "Fix login redirect race";
+        let prompt = render_spawn_template("bugfix-swarm", task).expect("template should render");
+        assert!(prompt.contains("Mission template: bugfix-swarm"));
+        assert!(prompt.contains("Ship small, targeted fixes with regression tests"));
+        assert!(prompt.contains(task));
+    }
+
+    #[test]
+    fn test_hardening_template_contains_expected_fragments() {
+        let task = "Strengthen API test suite";
+        let prompt = render_spawn_template("test-hardening", task).expect("template should render");
+        assert!(prompt.contains("Mission template: test-hardening"));
+        assert!(prompt.contains("Reduce flaky tests and tighten assertions"));
+        assert!(prompt.contains(task));
+    }
+
+    #[test]
+    fn migration_slice_template_contains_expected_fragments() {
+        let task = "Migrate auth path to v2 policy engine";
+        let prompt = render_spawn_template("migration-slice", task).expect("template should render");
+        assert!(prompt.contains("Mission template: migration-slice"));
+        assert!(prompt.contains("safe, reversible, and production-oriented"));
+        assert!(prompt.contains(task));
+    }
+
+    #[test]
+    fn unknown_template_returns_clear_error() {
+        let err = render_spawn_template("nope", "task").expect_err("should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown template 'nope'"));
+        assert!(msg.contains("bugfix-swarm"));
+        assert!(msg.contains("test-hardening"));
+        assert!(msg.contains("migration-slice"));
+    }
+
+    #[test]
+    fn no_template_passthrough_behavior() {
+        let task = "Keep behavior unchanged";
+        let prompt = build_spawn_task(task, None).expect("passthrough should succeed");
+        assert_eq!(prompt, task);
+    }
 }
