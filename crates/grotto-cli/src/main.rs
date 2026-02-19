@@ -213,7 +213,12 @@ fn build_spawn_task(task: &str, template: Option<&str>) -> Result<String> {
     }
 }
 
-fn spawn_agents(project_dir: PathBuf, count: usize, task: String, template: Option<String>) -> Result<()> {
+fn spawn_agents(
+    project_dir: PathBuf,
+    count: usize,
+    task: String,
+    template: Option<String>,
+) -> Result<()> {
     // Check dependencies before doing anything
     if let Err(missing) = Grotto::check_dependencies() {
         eprintln!("❌ Missing required dependencies: {}", missing.join(", "));
@@ -323,7 +328,11 @@ fn spawn_agents(project_dir: PathBuf, count: usize, task: String, template: Opti
     // Set up pipe-pane for persistent stream logging per agent
     for i in 0..count {
         let agent_id = format!("agent-{}", i + 1);
-        let stream_path = grotto.grotto_dir.join("agents").join(&agent_id).join("stream.log");
+        let stream_path = grotto
+            .grotto_dir
+            .join("agents")
+            .join(&agent_id)
+            .join("stream.log");
         let pane_target = format!("grotto:0.{}", i);
         let _ = Command::new("tmux")
             .args([
@@ -488,7 +497,10 @@ fn handle_startup_failure(
     Ok(())
 }
 
-fn infer_terminal_state_from_stream(agent: &grotto_core::AgentState, project_dir: &PathBuf) -> Option<(String, String)> {
+fn infer_terminal_state_from_stream(
+    agent: &grotto_core::AgentState,
+    project_dir: &PathBuf,
+) -> Option<(String, String)> {
     let stream_path = project_dir
         .join(".grotto")
         .join("agents")
@@ -521,7 +533,14 @@ fn infer_terminal_state_from_stream(agent: &grotto_core::AgentState, project_dir
         || lower.contains("summary of what i accomplished")
     {
         let detail = agent.progress.clone();
-        return Some(("done".to_string(), if detail.is_empty() { "completed".to_string() } else { detail }));
+        return Some((
+            "done".to_string(),
+            if detail.is_empty() {
+                "completed".to_string()
+            } else {
+                detail
+            },
+        ));
     }
 
     // Hard failure markers.
@@ -531,7 +550,10 @@ fn infer_terminal_state_from_stream(agent: &grotto_core::AgentState, project_dir
         || lower.contains("rate limit")
         || lower.contains("startup_failed")
     {
-        return Some(("failed".to_string(), "terminal failure detected in stream".to_string()));
+        return Some((
+            "failed".to_string(),
+            "terminal failure detected in stream".to_string(),
+        ));
     }
 
     None
@@ -548,15 +570,16 @@ fn reconcile_terminal_states(project_dir: &PathBuf, grotto: &mut Grotto) -> Resu
         }
 
         if let Some((state, detail)) = infer_terminal_state_from_stream(&agent, project_dir)
-            && (state == "done" || state == "failed") {
-                if let Some(m) = grotto.agents.get_mut(&agent_id) {
-                    m.state = state;
-                    m.progress = detail;
-                    m.last_update = Utc::now();
-                }
-                grotto.write_agent_status(&agent_id)?;
-                updated += 1;
+            && (state == "done" || state == "failed")
+        {
+            if let Some(m) = grotto.agents.get_mut(&agent_id) {
+                m.state = state;
+                m.progress = detail;
+                m.last_update = Utc::now();
             }
+            grotto.write_agent_status(&agent_id)?;
+            updated += 1;
+        }
     }
 
     Ok(updated)
@@ -626,9 +649,10 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
         let mut inferred_done = 0usize;
         for agent in grotto.agents.values() {
             if let Some((state, _)) = infer_terminal_state_from_stream(agent, &project_dir)
-                && state == "done" {
-                    inferred_done += 1;
-                }
+                && state == "done"
+            {
+                inferred_done += 1;
+            }
         }
         if inferred_done > 0 {
             println!("📺 Tmux session: grotto (completed)");
@@ -791,13 +815,14 @@ fn kill_target(project_dir: PathBuf, target: String) -> Result<()> {
         // Unregister from daemon if running
         if daemon::is_daemon_running()
             && let Ok(grotto) = Grotto::load(&project_dir)
-                && let Some(session_id) = &grotto.config.session_id {
-                    let mut registry = SessionRegistry::load();
-                    if registry.unregister(session_id).is_some() {
-                        let _ = registry.save();
-                        println!("   Unregistered session '{}' from daemon", session_id);
-                    }
-                }
+            && let Some(session_id) = &grotto.config.session_id
+        {
+            let mut registry = SessionRegistry::load();
+            if registry.unregister(session_id).is_some() {
+                let _ = registry.save();
+                println!("   Unregistered session '{}' from daemon", session_id);
+            }
+        }
 
         let output = Command::new("tmux")
             .args(["kill-session", "-t", "grotto"])
@@ -959,31 +984,33 @@ fn wait_for_completion(project_dir: PathBuf, interval: u64) -> Result<()> {
         // Show task board
         let task_board_path = grotto.grotto_dir.join("tasks.md");
         if task_board_path.exists()
-            && let Ok(content) = fs::read_to_string(&task_board_path) {
-                println!("{}", content);
-            }
+            && let Ok(content) = fs::read_to_string(&task_board_path)
+        {
+            println!("{}", content);
+        }
 
         // Show event summary
         let events_path = grotto.grotto_dir.join("events.jsonl");
         if events_path.exists()
-            && let Ok(content) = fs::read_to_string(&events_path) {
-                let event_count = content.lines().count();
-                let claims: Vec<&str> = content
-                    .lines()
-                    .filter(|l| l.contains("task_claimed"))
-                    .collect();
-                let completions: Vec<&str> = content
-                    .lines()
-                    .filter(|l| l.contains("task_completed"))
-                    .collect();
+            && let Ok(content) = fs::read_to_string(&events_path)
+        {
+            let event_count = content.lines().count();
+            let claims: Vec<&str> = content
+                .lines()
+                .filter(|l| l.contains("task_claimed"))
+                .collect();
+            let completions: Vec<&str> = content
+                .lines()
+                .filter(|l| l.contains("task_completed"))
+                .collect();
 
-                println!(
-                    "📡 Events: {} total ({} claims, {} completions)",
-                    event_count,
-                    claims.len(),
-                    completions.len()
-                );
-            }
+            println!(
+                "📡 Events: {} total ({} claims, {} completions)",
+                event_count,
+                claims.len(),
+                completions.len()
+            );
+        }
     }
 
     // Write a summary file for the lead to consume
@@ -1060,9 +1087,8 @@ fn serve(project_dir: PathBuf, port: u16, no_open: bool) -> Result<()> {
         });
     }
 
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::other(e))
-    })?;
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| grotto_core::GrottoError::Io(std::io::Error::other(e)))?;
 
     rt.block_on(async {
         grotto_serve::run_server(grotto_dir, port, web_dir)
@@ -1088,9 +1114,8 @@ fn daemon_start(port: u16) -> Result<()> {
     }
 
     // Find the grotto binary path (ourselves)
-    let exe = env::current_exe().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::other(e))
-    })?;
+    let exe =
+        env::current_exe().map_err(|e| grotto_core::GrottoError::Io(std::io::Error::other(e)))?;
 
     // Ensure daemon state directory exists
     daemon::ensure_daemon_dir().map_err(grotto_core::GrottoError::Io)?;
@@ -1182,9 +1207,8 @@ fn daemon_status() -> Result<()> {
 }
 
 fn daemon_serve(port: u16, web_dir: Option<PathBuf>) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        grotto_core::GrottoError::Io(std::io::Error::other(e))
-    })?;
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| grotto_core::GrottoError::Io(std::io::Error::other(e)))?;
 
     rt.block_on(async {
         grotto_serve::run_daemon(port, web_dir)
@@ -1197,16 +1221,17 @@ fn daemon_serve(port: u16, web_dir: Option<PathBuf>) -> Result<()> {
 fn find_web_dir() -> Option<PathBuf> {
     // 1. Relative to the binary
     if let Ok(exe) = env::current_exe()
-        && let Some(bin_dir) = exe.parent() {
-            // Check if we're in target/debug or target/release
-            let project_root = bin_dir.parent().and_then(|p| p.parent());
-            if let Some(root) = project_root {
-                let web = root.join("web");
-                if web.exists() {
-                    return Some(web);
-                }
+        && let Some(bin_dir) = exe.parent()
+    {
+        // Check if we're in target/debug or target/release
+        let project_root = bin_dir.parent().and_then(|p| p.parent());
+        if let Some(root) = project_root {
+            let web = root.join("web");
+            if web.exists() {
+                return Some(web);
             }
         }
+    }
     // 2. Current directory
     let cwd_web = PathBuf::from("web");
     if cwd_web.exists() {
@@ -1240,7 +1265,8 @@ mod tests {
     #[test]
     fn migration_slice_template_contains_expected_fragments() {
         let task = "Migrate auth path to v2 policy engine";
-        let prompt = render_spawn_template("migration-slice", task).expect("template should render");
+        let prompt =
+            render_spawn_template("migration-slice", task).expect("template should render");
         assert!(prompt.contains("Mission template: migration-slice"));
         assert!(prompt.contains("safe, reversible, and production-oriented"));
         assert!(prompt.contains(task));

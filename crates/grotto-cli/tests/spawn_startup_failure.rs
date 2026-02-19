@@ -197,19 +197,13 @@ fn status_infers_completed_from_stream_when_tmux_missing() {
 
     // Simulate completed terminal output after tmux session disappears.
     fs::write(
-        project
-            .path()
-            .join(".grotto/agents/agent-1/stream.log"),
+        project.path().join(".grotto/agents/agent-1/stream.log"),
         "All done. Summary of what I accomplished... committed and pushed",
     )
     .unwrap();
 
     let status_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
-        .args([
-            "--dir",
-            &project.path().display().to_string(),
-            "status",
-        ])
+        .args(["--dir", &project.path().display().to_string(), "status"])
         .env("PATH", &path)
         .env("HOME", home.path())
         .env("GROTTO_TEST_STATE_DIR", home.path())
@@ -220,7 +214,11 @@ fn status_infers_completed_from_stream_when_tmux_missing() {
     assert!(status_output.status.success());
     let stdout = String::from_utf8_lossy(&status_output.stdout);
     let lower = stdout.to_lowercase();
-    assert!(lower.contains("tmux session: grotto (completed)"), "stdout: {}", stdout);
+    assert!(
+        lower.contains("tmux session: grotto (completed)"),
+        "stdout: {}",
+        stdout
+    );
     assert!(lower.contains("done"), "stdout: {}", stdout);
 }
 
@@ -248,19 +246,13 @@ fn status_keeps_not_found_when_no_completion_signal() {
     assert!(spawn_output.status.success());
 
     fs::write(
-        project
-            .path()
-            .join(".grotto/agents/agent-1/stream.log"),
+        project.path().join(".grotto/agents/agent-1/stream.log"),
         "still starting up",
     )
     .unwrap();
 
     let status_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
-        .args([
-            "--dir",
-            &project.path().display().to_string(),
-            "status",
-        ])
+        .args(["--dir", &project.path().display().to_string(), "status"])
         .env("PATH", &path)
         .env("HOME", home.path())
         .env("GROTTO_TEST_STATE_DIR", home.path())
@@ -271,7 +263,11 @@ fn status_keeps_not_found_when_no_completion_signal() {
     assert!(status_output.status.success());
     let stdout = String::from_utf8_lossy(&status_output.stdout);
     let lower = stdout.to_lowercase();
-    assert!(lower.contains("tmux session: grotto (not found)"), "stdout: {}", stdout);
+    assert!(
+        lower.contains("tmux session: grotto (not found)"),
+        "stdout: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -298,19 +294,13 @@ fn status_rewrites_spawning_to_done_when_completion_signal_exists() {
     assert!(spawn_output.status.success());
 
     fs::write(
-        project
-            .path()
-            .join(".grotto/agents/agent-1/stream.log"),
+        project.path().join(".grotto/agents/agent-1/stream.log"),
         "All done. committed and pushed",
     )
     .unwrap();
 
     let _status_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
-        .args([
-            "--dir",
-            &project.path().display().to_string(),
-            "status",
-        ])
+        .args(["--dir", &project.path().display().to_string(), "status"])
         .env("PATH", &path)
         .env("HOME", home.path())
         .env("GROTTO_TEST_STATE_DIR", home.path())
@@ -318,14 +308,14 @@ fn status_rewrites_spawning_to_done_when_completion_signal_exists() {
         .output()
         .unwrap();
 
-    let status_json = fs::read_to_string(
-        project
-            .path()
-            .join(".grotto/agents/agent-1/status.json"),
-    )
-    .unwrap();
+    let status_json =
+        fs::read_to_string(project.path().join(".grotto/agents/agent-1/status.json")).unwrap();
 
-    assert!(status_json.contains("\"state\": \"done\""), "status: {}", status_json);
+    assert!(
+        status_json.contains("\"state\": \"done\""),
+        "status: {}",
+        status_json
+    );
 }
 
 #[test]

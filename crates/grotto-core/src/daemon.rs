@@ -53,8 +53,7 @@ impl SessionRegistry {
     /// Save the registry to disk.
     pub fn save(&self) -> std::io::Result<()> {
         ensure_daemon_dir()?;
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         fs::write(sessions_file(), json)
     }
 

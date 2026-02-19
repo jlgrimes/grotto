@@ -5,7 +5,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -73,7 +73,9 @@ async fn wait_for_event_type(ws: &mut WsStream, event_type: &str, timeout: Durat
 }
 
 async fn http_request(port: u16, req: &str) -> String {
-    let stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+    let stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
     let (mut reader, mut writer) = stream.into_split();
 
     writer.write_all(req.as_bytes()).await.unwrap();

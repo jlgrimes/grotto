@@ -259,7 +259,10 @@ mod tests {
     #[test]
     fn infer_thinking() {
         assert_eq!(infer_phase("Thinking..."), AgentPhase::Thinking);
-        assert_eq!(infer_phase("some output\n⏳ Processing"), AgentPhase::Thinking);
+        assert_eq!(
+            infer_phase("some output\n⏳ Processing"),
+            AgentPhase::Thinking
+        );
         // Spinner chars
         assert_eq!(infer_phase("Loading ⠋"), AgentPhase::Thinking);
     }
@@ -300,7 +303,10 @@ mod tests {
     #[test]
     fn infer_finished() {
         assert_eq!(infer_phase("done\n/exit"), AgentPhase::Finished);
-        assert_eq!(infer_phase("Process exited with code 0"), AgentPhase::Finished);
+        assert_eq!(
+            infer_phase("Process exited with code 0"),
+            AgentPhase::Finished
+        );
     }
 
     #[test]

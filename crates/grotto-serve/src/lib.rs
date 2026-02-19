@@ -183,8 +183,7 @@ impl DaemonState {
 
             let (tx, _rx) = broadcast::channel::<String>(256);
             let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
-            let monitor_abort =
-                spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
+            let monitor_abort = spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
             sessions.insert(
                 id,
                 LiveSession {
@@ -218,8 +217,7 @@ impl DaemonState {
             }
             let (tx, _rx) = broadcast::channel::<String>(256);
             let abort_handle = spawn_session_watcher(grotto_dir, tx.clone());
-            let monitor_abort =
-                spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
+            let monitor_abort = spawn_tmux_monitor(entry.id.clone(), entry.agent_count, tx.clone());
             let mut sessions = state.sessions.write().await;
             sessions.insert(
                 entry.id.clone(),
@@ -254,7 +252,8 @@ impl DaemonState {
                         }
                     }
 
-                    let (active, status) = detect_session_liveness(session_id, g.config.agent_count);
+                    let (active, status) =
+                        detect_session_liveness(session_id, g.config.agent_count);
                     session_active = active;
                     session_status = status;
                 }
@@ -390,13 +389,14 @@ pub async fn run_server(
         .with_state(state);
 
     if let Some(web_path) = web_dir
-        && web_path.exists() {
-            let serve_dir = tower_http::services::ServeDir::new(&web_path)
-                .append_index_html_on_directories(true);
-            app = app.fallback_service(serve_dir);
-        } else {
-            app = app.fallback(serve_embedded);
-        }
+        && web_path.exists()
+    {
+        let serve_dir =
+            tower_http::services::ServeDir::new(&web_path).append_index_html_on_directories(true);
+        app = app.fallback_service(serve_dir);
+    } else {
+        app = app.fallback(serve_embedded);
+    }
 
     let cors = tower_http::cors::CorsLayer::permissive();
     let app = app.layer(cors);
@@ -554,9 +554,14 @@ pub async fn run_daemon(port: u16, web_dir: Option<PathBuf>) -> std::io::Result<
 // ---------------------------------------------------------------------------
 
 fn read_last_event_timestamp(session_dir: &str) -> Option<String> {
-    let events_path = PathBuf::from(session_dir).join(".grotto").join("events.jsonl");
+    let events_path = PathBuf::from(session_dir)
+        .join(".grotto")
+        .join("events.jsonl");
     let content = std::fs::read_to_string(&events_path).ok()?;
-    let last_line = content.lines().filter(|line| !line.trim().is_empty()).next_back()?;
+    let last_line = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .next_back()?;
     let value: serde_json::Value = serde_json::from_str(last_line).ok()?;
     value
         .get("timestamp")
@@ -588,7 +593,11 @@ async fn api_list_sessions(state: Arc<DaemonState>) -> impl IntoResponse {
         });
     }
 
-    result.sort_by(|a, b| b.last_updated.cmp(&a.last_updated).then_with(|| a.id.cmp(&b.id)));
+    result.sort_by(|a, b| {
+        b.last_updated
+            .cmp(&a.last_updated)
+            .then_with(|| a.id.cmp(&b.id))
+    });
 
     Json(result)
 }
@@ -837,11 +846,7 @@ fn spawn_tmux_monitor(
     handle.abort_handle()
 }
 
-async fn run_tmux_monitor(
-    session_id: String,
-    agent_count: usize,
-    tx: broadcast::Sender<String>,
-) {
+async fn run_tmux_monitor(session_id: String, agent_count: usize, tx: broadcast::Sender<String>) {
     use std::collections::HashMap;
 
     let mut prev_phases: HashMap<String, AgentPhase> = HashMap::new();
@@ -991,19 +996,19 @@ async fn run_file_watcher(
                             "status.json" => {
                                 if let Ok(content) = tokio::fs::read_to_string(path).await
                                     && let Ok(agent) = serde_json::from_str::<AgentState>(&content)
-                                    {
-                                        let ws_event = WsEvent::message_event(
-                                            "agent:status",
-                                            chrono::Utc::now().to_rfc3339(),
-                                            Some(agent.id.clone()),
-                                            agent.current_task.clone(),
-                                            Some(format!("Agent {} is now {}", agent.id, agent.state)),
-                                            Some(serde_json::to_value(&agent).unwrap_or_default()),
-                                        );
-                                        if let Ok(json) = serde_json::to_string(&ws_event) {
-                                            let _ = tx.send(json);
-                                        }
+                                {
+                                    let ws_event = WsEvent::message_event(
+                                        "agent:status",
+                                        chrono::Utc::now().to_rfc3339(),
+                                        Some(agent.id.clone()),
+                                        agent.current_task.clone(),
+                                        Some(format!("Agent {} is now {}", agent.id, agent.state)),
+                                        Some(serde_json::to_value(&agent).unwrap_or_default()),
+                                    );
+                                    if let Ok(json) = serde_json::to_string(&ws_event) {
+                                        let _ = tx.send(json);
                                     }
+                                }
                             }
                             "tasks.md" => {
                                 let tasks = parse_task_board(path);
@@ -1070,7 +1075,7 @@ async fn read_new_events(path: &std::path::Path, line_count: &Arc<RwLock<usize>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{channel::mpsc, StreamExt};
+    use futures::{StreamExt, channel::mpsc};
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -1199,7 +1204,8 @@ mod tests {
 
         assert!(
             app_js.contains("case 'session:completed':\n        if (!options.fromHistory) {")
-                || app_js.contains("case 'session:completed':\r\n        if (!options.fromHistory) {"),
+                || app_js
+                    .contains("case 'session:completed':\r\n        if (!options.fromHistory) {"),
             "session:completed handler must ignore history replay events"
         );
     }
