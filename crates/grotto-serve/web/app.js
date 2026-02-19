@@ -463,7 +463,7 @@
     }
 
     if (!wsEverConnected) {
-      completeFromHistory('websocket unavailable; loaded history');
+      completeFromHistory();
       return;
     }
 
@@ -475,7 +475,7 @@
     if (sessionCompleted) return;
 
     if (!wsEverConnected) {
-      completeFromHistory('websocket unavailable; loaded history');
+      completeFromHistory();
       return;
     }
 
@@ -490,7 +490,7 @@
       ws = new WebSocket(WS_URL);
     } catch (e) {
       setConnectionStatus('disconnected');
-      completeFromHistory('websocket unavailable; loaded history');
+      completeFromHistory();
       return;
     }
 
@@ -518,9 +518,9 @@
   }
 
   function closeSocketIfOpen() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    }
+    if (!ws) return;
+    if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) return;
+    ws.close();
   }
 
   function setSessionCompleted(reason) {
