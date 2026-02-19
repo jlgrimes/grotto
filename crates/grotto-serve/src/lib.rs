@@ -1194,6 +1194,17 @@ mod tests {
     }
 
     #[test]
+    fn test_web_app_history_mode_does_not_complete_session() {
+        let app_js = include_str!("../web/app.js");
+
+        assert!(
+            app_js.contains("case 'session:completed':\n        if (!options.fromHistory) {")
+                || app_js.contains("case 'session:completed':\r\n        if (!options.fromHistory) {"),
+            "session:completed handler must ignore history replay events"
+        );
+    }
+
+    #[test]
     fn test_snapshot_with_grotto_state() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().to_path_buf();

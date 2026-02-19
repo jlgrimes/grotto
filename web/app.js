@@ -697,7 +697,9 @@
         break;
 
       case 'session:completed':
-        setSessionCompleted((event.data && event.data.reason) || 'session finished');
+        if (!options.fromHistory) {
+          setSessionCompleted((event.data && event.data.reason) || 'session finished');
+        }
         addLogEntry(event);
         break;
 
