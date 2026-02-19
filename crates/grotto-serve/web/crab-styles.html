@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0e1a; color:#e0d8c8; font-family:'Courier New',monospace; padding:20px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; max-width:1000px; margin:0 auto; }
+  .card { background:#111828; border:1px solid rgba(212,168,87,0.3); border-radius:8px; padding:16px; text-align:center; }
+  .card h3 { color:#d4a857; margin-bottom:4px; font-size:14px; }
+  .card p { color:#8899aa; font-size:11px; margin-bottom:12px; line-height:1.4; }
+  canvas { image-rendering:pixelated; image-rendering:crisp-edges; display:block; margin:0 auto; }
+  h1 { text-align:center; color:#d4a857; margin-bottom:16px; font-size:18px; }
+</style>
+</head>
+<body>
+<h1>🦀 Pick a Crab Style</h1>
+<div class="grid">
+  <div class="card">
+    <h3>A) Cute Round</h3>
+    <p>Big dome body, big sparkly eyes, chunky curved claws.<br>Soft and friendly. The mascot pick.</p>
+    <canvas id="c1" width="48" height="44" style="width:336px;height:308px"></canvas>
+  </div>
+  <div class="card">
+    <h3>B) Classic Crab</h3>
+    <p>Closest to reference. Wide body, strong claws raised,<br>curved legs. The balanced pick.</p>
+    <canvas id="c2" width="52" height="44" style="width:364px;height:308px"></canvas>
+  </div>
+  <div class="card">
+    <h3>C) Thicc Boy</h3>
+    <p>Extra chunky. Big round body, meaty claws,<br>stubby legs. Absolute unit energy.</p>
+    <canvas id="c3" width="50" height="42" style="width:350px;height:294px"></canvas>
+  </div>
+  <div class="card">
+    <h3>D) Battle Crab</h3>
+    <p>Detailed & fierce. Shell texture, sharp claws,<br>long curved legs. The serious pick.</p>
+    <canvas id="c4" width="56" height="48" style="width:392px;height:336px"></canvas>
+  </div>
+</div>
+<script>
+// Draw crabs using canvas primitives at low res → pixelated scaling
+// This gives organic curves that look like proper pixel art
+
+function drawCrab(canvasId, opts) {
+  const cv = document.getElementById(canvasId);
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const {
+    bodyColor = '#e04030',
+    highlightColor = '#f06850',
+    shadowColor = '#a02818',
+    darkColor = '#701810',
+    outlineColor = '#180808',
+    eyeSize = 3,
+    bodyW = 18, bodyH = 12,
+    bodyX = W/2, bodyY = H*0.48,
+    clawSize = 1,
+    legCount = 3,
+    legThickness = 2,
+    legLength = 10,
+    bellyColor = '#d4a050',
+    bellyHighlight = '#e8c070',
+  } = opts;
+
+  // Helper: outlined ellipse
+  function filledEllipse(x, y, rx, ry, fill, outline) {
+    if (outline) {
+      ctx.fillStyle = outline;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx+1, ry+1, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // Helper: draw a curved leg
+  function drawLeg(startX, startY, endX, endY, midOffsetX, midOffsetY) {
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = legThickness + 1;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(startX + midOffsetX, startY + midOffsetY, endX, endY);
+    ctx.stroke();
+
+    ctx.strokeStyle = bodyColor;
+    ctx.lineWidth = legThickness;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(startX + midOffsetX, startY + midOffsetY, endX, endY);
+    ctx.stroke();
+  }
+
+  // Helper: draw a claw
+  function drawClaw(cx, cy, side, size) {
+    const s = side; // -1 left, 1 right
+    const sc = 5 * size;
+
+    // Arm
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.quadraticCurveTo(cx + s*4, cy - 6*size, cx + s*8*size, cy - 10*size);
+    ctx.stroke();
+    ctx.strokeStyle = shadowColor;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.quadraticCurveTo(cx + s*4, cy - 6*size, cx + s*8*size, cy - 10*size);
+    ctx.stroke();
+
+    // Claw pincer - top
+    const clawX = cx + s*8*size;
+    const clawY = cy - 10*size;
+
+    ctx.fillStyle = outlineColor;
+    ctx.beginPath();
+    ctx.ellipse(clawX + s*2, clawY - 3*size, 5*size, 3.5*size, s*0.3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = highlightColor;
+    ctx.beginPath();
+    ctx.ellipse(clawX + s*2, clawY - 3*size, 4*size, 2.5*size, s*0.3, 0, Math.PI*2);
+    ctx.fill();
+
+    // Claw pincer - bottom
+    ctx.fillStyle = outlineColor;
+    ctx.beginPath();
+    ctx.ellipse(clawX + s*2, clawY + 2*size, 4.5*size, 2.5*size, s*-0.2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = bodyColor;
+    ctx.beginPath();
+    ctx.ellipse(clawX + s*2, clawY + 2*size, 3.5*size, 1.8*size, s*-0.2, 0, Math.PI*2);
+    ctx.fill();
+
+    // Inner highlight
+    ctx.fillStyle = highlightColor;
+    ctx.beginPath();
+    ctx.ellipse(clawX + s*1.5, clawY - 3*size, 2*size, 1.5*size, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // === LEGS ===
+  for (let i = 0; i < legCount; i++) {
+    const frac = (i + 0.5) / legCount;
+    const startOffsetX = (bodyW * 0.4) + i * 1.5;
+    const startY = bodyY + bodyH * (0.1 + frac * 0.6);
+
+    const angle = 0.5 + i * 0.4;
+    const len = legLength * (0.8 + i * 0.1);
+
+    // Left leg
+    drawLeg(
+      bodyX - startOffsetX, startY,
+      bodyX - startOffsetX - len, startY + len * 0.8,
+      -len * 0.5, len * 0.2
+    );
+    // Right leg
+    drawLeg(
+      bodyX + startOffsetX, startY,
+      bodyX + startOffsetX + len, startY + len * 0.8,
+      len * 0.5, len * 0.2
+    );
+  }
+
+  // === CLAWS ===
+  drawClaw(bodyX - bodyW * 0.35, bodyY - bodyH * 0.2, -1, clawSize);
+  drawClaw(bodyX + bodyW * 0.35, bodyY - bodyH * 0.2, 1, clawSize);
+
+  // === BODY ===
+  // Outline
+  filledEllipse(bodyX, bodyY, bodyW/2 + 1, bodyH/2 + 1, outlineColor);
+  // Main body
+  filledEllipse(bodyX, bodyY, bodyW/2, bodyH/2, bodyColor);
+  // Highlight (top dome)
+  filledEllipse(bodyX, bodyY - bodyH*0.15, bodyW/2 - 1, bodyH/2 - 2, highlightColor);
+  // Shadow (bottom)
+  ctx.fillStyle = shadowColor;
+  ctx.beginPath();
+  ctx.ellipse(bodyX, bodyY + bodyH*0.15, bodyW/2 - 1, bodyH*0.25, 0, 0, Math.PI);
+  ctx.fill();
+
+  // Belly segment
+  filledEllipse(bodyX, bodyY + bodyH*0.1, bodyW*0.25, bodyH*0.25, outlineColor);
+  filledEllipse(bodyX, bodyY + bodyH*0.1, bodyW*0.23, bodyH*0.22, bellyColor);
+  filledEllipse(bodyX, bodyY + bodyH*0.05, bodyW*0.18, bodyH*0.15, bellyHighlight);
+
+  // Shell detail lines
+  ctx.strokeStyle = shadowColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(bodyX, bodyY - bodyH*0.05, bodyW*0.35, bodyH*0.15, 0, 0.3, Math.PI - 0.3);
+  ctx.stroke();
+
+  // === EYES ===
+  // Eye stalks
+  const eyeSpacing = bodyW * 0.2;
+  for (const side of [-1, 1]) {
+    const ex = bodyX + side * eyeSpacing;
+    const ey = bodyY - bodyH/2 - 2;
+
+    // Stalk
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ex, bodyY - bodyH*0.3);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.strokeStyle = bodyColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ex, bodyY - bodyH*0.3);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+
+    // Eye
+    filledEllipse(ex, ey - 1, eyeSize, eyeSize, outlineColor);
+    filledEllipse(ex, ey - 1, eyeSize - 0.5, eyeSize - 0.5, '#f0f0e8');
+    // Pupil
+    ctx.fillStyle = '#101018';
+    ctx.beginPath();
+    ctx.ellipse(ex + side * 0.8, ey - 0.5, eyeSize * 0.45, eyeSize * 0.55, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Sparkle
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(ex + side * 0.3 - 0.5, ey - 2, 1, 1);
+  }
+}
+
+// A) Cute Round — big eyes, round body, friendly
+drawCrab('c1', {
+  bodyW: 22, bodyH: 16,
+  bodyX: 24, bodyY: 24,
+  eyeSize: 3.5,
+  clawSize: 0.9,
+  legCount: 3,
+  legThickness: 2,
+  legLength: 8,
+  bodyColor: '#e04838',
+  highlightColor: '#f07060',
+  shadowColor: '#a03020',
+  darkColor: '#701810',
+});
+
+// B) Classic — balanced proportions, reference style
+drawCrab('c2', {
+  bodyW: 26, bodyH: 14,
+  bodyX: 26, bodyY: 24,
+  eyeSize: 2.8,
+  clawSize: 1.1,
+  legCount: 3,
+  legThickness: 2,
+  legLength: 11,
+  bodyColor: '#d83828',
+  highlightColor: '#f05840',
+  shadowColor: '#981810',
+  darkColor: '#601008',
+});
+
+// C) Thicc Boy — extra wide, stubby legs, chunky
+drawCrab('c3', {
+  bodyW: 28, bodyH: 18,
+  bodyX: 25, bodyY: 23,
+  eyeSize: 2.5,
+  clawSize: 1.3,
+  legCount: 3,
+  legThickness: 2.5,
+  legLength: 7,
+  bodyColor: '#e04030',
+  highlightColor: '#f86858',
+  shadowColor: '#a82818',
+  darkColor: '#681008',
+  bellyColor: '#d8a848',
+  bellyHighlight: '#f0c868',
+});
+
+// D) Battle Crab — detailed, long legs, fierce
+drawCrab('c4', {
+  bodyW: 26, bodyH: 15,
+  bodyX: 28, bodyY: 24,
+  eyeSize: 2.2,
+  clawSize: 1.2,
+  legCount: 4,
+  legThickness: 1.8,
+  legLength: 14,
+  bodyColor: '#c83020',
+  highlightColor: '#e85038',
+  shadowColor: '#881810',
+  darkColor: '#500808',
+});
+</script>
+</body>
+</html>

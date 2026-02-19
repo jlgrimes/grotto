@@ -19,7 +19,8 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 
 #[derive(rust_embed::Embed)]
-#[folder = "../../web/"]
+// Use crate-local assets so packaged installs always include the UI bundle.
+#[folder = "web/"]
 struct WebAssets;
 
 // ---------------------------------------------------------------------------
@@ -1291,6 +1292,13 @@ mod tests {
         let registry = SessionRegistry::load();
         assert_eq!(registry.sessions.len(), 1);
         assert!(registry.sessions.contains_key("test-session"));
+    }
+
+    #[test]
+    fn test_embedded_web_assets_present() {
+        // Regression guard: bad embed paths cause UI white-screen/404.
+        assert!(WebAssets::get("index.html").is_some());
+        assert!(WebAssets::get("app.js").is_some());
     }
 
     #[test]
