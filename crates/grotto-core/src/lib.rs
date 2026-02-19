@@ -88,6 +88,24 @@ pub struct Grotto {
 
 impl Grotto {
     pub fn new(project_dir: impl AsRef<Path>, agent_count: usize, task: String) -> Result<Self> {
+        Self::init(project_dir, agent_count, task, None)
+    }
+
+    pub fn init_with_session(
+        project_dir: impl AsRef<Path>,
+        agent_count: usize,
+        task: String,
+        session_id: Option<String>,
+    ) -> Result<Self> {
+        Self::init(project_dir, agent_count, task, session_id)
+    }
+
+    fn init(
+        project_dir: impl AsRef<Path>,
+        agent_count: usize,
+        task: String,
+        session_id: Option<String>,
+    ) -> Result<Self> {
         let project_dir = project_dir.as_ref().to_path_buf();
         let grotto_dir = project_dir.join(".grotto");
 
@@ -96,7 +114,7 @@ impl Grotto {
         fs::create_dir_all(grotto_dir.join("agents"))?;
         fs::create_dir_all(grotto_dir.join("messages"))?;
 
-        let session_id = words::generate_session_id();
+        let session_id = session_id.unwrap_or_else(words::generate_session_id);
         let config = Config {
             agent_count,
             task: task.clone(),

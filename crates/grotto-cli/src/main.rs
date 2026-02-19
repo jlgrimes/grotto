@@ -120,6 +120,21 @@ enum DaemonAction {
     Stop,
     /// Check daemon status
     Status,
+    /// Register a session with the daemon (for async run ingestion)
+    Register {
+        /// Session ID to register
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Number of agents (for scaffold creation)
+        #[arg(long, default_value = "1")]
+        agent_count: usize,
+        /// Task description (for scaffold creation)
+        #[arg(long)]
+        task: Option<String>,
+        /// Create scaffold if session doesn't exist
+        #[arg(long)]
+        create_scaffold: bool,
+    },
 }
 
 fn main() {
@@ -1097,11 +1112,17 @@ fn serve(project_dir: PathBuf, port: u16, no_open: bool) -> Result<()> {
     })
 }
 
-fn run_daemon(_project_dir: PathBuf, action: DaemonAction) -> Result<()> {
+fn run_daemon(project_dir: PathBuf, action: DaemonAction) -> Result<()> {
     match action {
         DaemonAction::Start { port } => daemon_start(port),
         DaemonAction::Stop => daemon_stop(),
         DaemonAction::Status => daemon_status(),
+        DaemonAction::Register {
+            session_id,
+            agent_count,
+            task,
+            create_scaffold,
+        } => daemon_register(project_dir, session_id, agent_count, task, create_scaffold),
     }
 }
 
@@ -1203,6 +1224,71 @@ fn daemon_status() -> Result<()> {
             let _ = daemon::remove_pid();
         }
     }
+    Ok(())
+}
+
+fn daemon_register(
+    project_dir: PathBuf,
+    session_id: Option<String>,
+    agent_count: usize,
+    task: Option<String>,
+    create_scaffold: bool,
+) -> Result<()> {
+    let grotto_dir = project_dir.join(".grotto");
+
+    // Try to load existing session first
+    let grotto = if grotto_dir.exists() {
+        match Grotto::load(&project_dir) {
+            Ok(g) => {
+                println!("Loaded existing session from {}", project_dir.display());
+                g
+            }
+            Err(_) if create_scaffold => {
+                let task = task.unwrap_or_else(|| "Async run".to_string());
+                println!("Creating scaffold session in {}", project_dir.display());
+                Grotto::init_with_session(&project_dir, agent_count, task, session_id)?
+            }
+            Err(e) => return Err(e),
+        }
+    } else if create_scaffold {
+        let task = task.unwrap_or_else(|| "Async run".to_string());
+        println!("Creating scaffold session in {}", project_dir.display());
+        Grotto::init_with_session(&project_dir, agent_count, task, session_id)?
+    } else {
+        return Err(grotto_core::GrottoError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No .grotto directory found and --create-scaffold not specified",
+        )));
+    };
+
+    let session_id = grotto
+        .config
+        .session_id
+        .as_deref()
+        .unwrap_or("unknown-session");
+
+    // Register with daemon
+    let mut registry = SessionRegistry::load();
+    registry.register(SessionEntry {
+        id: session_id.to_string(),
+        dir: project_dir.display().to_string(),
+        agent_count: grotto.config.agent_count,
+        task: grotto.config.task.clone(),
+    });
+    registry.save().map_err(grotto_core::GrottoError::Io)?;
+
+    println!("✅ Registered session '{}' with daemon", session_id);
+    println!("   Directory: {}", project_dir.display());
+    println!("   Task: {}", grotto.config.task);
+    println!("   Agents: {}", grotto.config.agent_count);
+
+    if daemon::is_daemon_running() {
+        let url = daemon::daemon_url(9091);
+        println!("   🪸 Portal: {}/{}", url, session_id);
+    } else {
+        println!("   Note: daemon not running - start with 'grotto daemon start'");
+    }
+
     Ok(())
 }
 
