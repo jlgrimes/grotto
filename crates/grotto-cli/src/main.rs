@@ -421,6 +421,55 @@ fn handle_startup_failure(
     Ok(())
 }
 
+fn infer_terminal_state_from_stream(agent: &grotto_core::AgentState, project_dir: &PathBuf) -> Option<(String, String)> {
+    let stream_path = project_dir
+        .join(".grotto")
+        .join("agents")
+        .join(&agent.id)
+        .join("stream.log");
+
+    let content = fs::read_to_string(stream_path).ok()?;
+    let tail: String = content
+        .lines()
+        .rev()
+        .take(80)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if tail.trim().is_empty() {
+        return None;
+    }
+
+    let lower = tail.to_lowercase();
+
+    // Completion markers from Claude Code / agent summaries.
+    if lower.contains("all done")
+        || lower.contains("work completed")
+        || lower.contains("done:")
+        || lower.contains("committed")
+        || lower.contains("pushed")
+        || lower.contains("summary of what i accomplished")
+    {
+        let detail = agent.progress.clone();
+        return Some(("done".to_string(), if detail.is_empty() { "completed".to_string() } else { detail }));
+    }
+
+    // Hard failure markers.
+    if lower.contains("error:")
+        || lower.contains("failed")
+        || lower.contains("panic")
+        || lower.contains("rate limit")
+        || lower.contains("startup_failed")
+    {
+        return Some(("failed".to_string(), "terminal failure detected in stream".to_string()));
+    }
+
+    None
+}
+
 fn view_session() -> Result<()> {
     let output = Command::new("tmux")
         .args(["has-session", "-t", "grotto"])
@@ -477,7 +526,19 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
     } else if session_exists {
         println!("📺 Tmux session: grotto (active)");
     } else {
-        println!("📺 Tmux session: grotto (not found)");
+        // Distinguish normal completion from abrupt disappearance.
+        let mut inferred_done = 0usize;
+        for agent in grotto.agents.values() {
+            if let Some((state, _)) = infer_terminal_state_from_stream(agent, &project_dir)
+                && state == "done" {
+                    inferred_done += 1;
+                }
+        }
+        if inferred_done > 0 {
+            println!("📺 Tmux session: grotto (completed)");
+        } else {
+            println!("📺 Tmux session: grotto (not found)");
+        }
     }
 
     // Capture live tmux state if session is active
@@ -496,6 +557,16 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
         // Prefer live tmux phase over stale file-based state
         let (display_state, display_detail) = if let Some(snap) = live_phases.get(agent_id) {
             (snap.phase.to_string(), snap.last_activity_line.clone())
+        } else if !session_exists {
+            if let Some((state, detail)) = infer_terminal_state_from_stream(agent, &project_dir) {
+                (state, detail)
+            } else {
+                let is_failed = agent.state == "failed"
+                    || agent.state == "error"
+                    || agent.progress.contains("startup_failed");
+                let state = if is_failed { "failed" } else { &agent.state };
+                (state.to_string(), agent.progress.clone())
+            }
         } else {
             let is_failed = agent.state == "failed"
                 || agent.state == "error"
@@ -515,6 +586,7 @@ fn show_status(project_dir: PathBuf) -> Result<()> {
             "working" => "🔄",
             "failed" => "❌",
             "spawning" => "🚀",
+            "done" => "✅",
             _ => "❓",
         };
 
