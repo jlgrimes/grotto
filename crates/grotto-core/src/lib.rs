@@ -838,4 +838,72 @@ mod tests {
         assert_eq!(back.state, "working");
         assert_eq!(back.current_task, Some("main".into()));
     }
+
+    // === Async run ingestion tests ===
+
+    #[test]
+    fn init_with_custom_session_id() {
+        let (_tmp, dir) = setup();
+        let custom_id = "test-session-123";
+        let grotto = Grotto::init_with_session(&dir, 2, "test task".into(), Some(custom_id.to_string())).unwrap();
+        
+        assert_eq!(grotto.config.session_id, Some(custom_id.to_string()));
+        assert_eq!(grotto.config.agent_count, 2);
+        assert_eq!(grotto.config.task, "test task");
+        assert_eq!(grotto.agents.len(), 2);
+        assert!(grotto.agents.contains_key("agent-1"));
+        assert!(grotto.agents.contains_key("agent-2"));
+        
+        // Verify config file was written with custom session ID
+        let config_path = dir.join(".grotto").join("config.toml");
+        let config_str = fs::read_to_string(config_path).unwrap();
+        assert!(config_str.contains(&format!("session_id = \"{}\"", custom_id)));
+    }
+
+    #[test]
+    fn init_with_none_session_id_generates_one() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::init_with_session(&dir, 1, "test".into(), None).unwrap();
+        
+        assert!(grotto.config.session_id.is_some());
+        let session_id = grotto.config.session_id.unwrap();
+        assert!(session_id.contains('-')); // Should be in adjective-noun-noun format
+        assert!(session_id.len() > 10); // Should be reasonably long
+    }
+
+    #[test] 
+    fn new_method_still_works() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::new(&dir, 3, "legacy test".into()).unwrap();
+        
+        assert!(grotto.config.session_id.is_some());
+        assert_eq!(grotto.config.agent_count, 3);
+        assert_eq!(grotto.config.task, "legacy test");
+    }
+
+    #[test]
+    fn init_with_session_creates_proper_structure() {
+        let (_tmp, dir) = setup();
+        let grotto = Grotto::init_with_session(&dir, 1, "async run".into(), Some("cron-job-456".to_string())).unwrap();
+        
+        // Verify directory structure
+        assert!(dir.join(".grotto").exists());
+        assert!(dir.join(".grotto/agents").exists());  
+        assert!(dir.join(".grotto/agents/agent-1").exists());
+        assert!(dir.join(".grotto/agents/agent-1/status.json").exists());
+        assert!(dir.join(".grotto/config.toml").exists());
+        assert!(dir.join(".grotto/tasks.md").exists());
+        assert!(dir.join(".grotto/events.jsonl").exists());
+        
+        // Verify config content
+        assert_eq!(grotto.config.session_id, Some("cron-job-456".to_string()));
+        assert_eq!(grotto.config.task, "async run");
+        assert_eq!(grotto.config.agent_count, 1);
+        
+        // Verify agent was created
+        assert_eq!(grotto.agents.len(), 1);
+        let agent = grotto.agents.get("agent-1").unwrap();
+        assert_eq!(agent.id, "agent-1");
+        assert_eq!(agent.state, "spawning");
+    }
 }

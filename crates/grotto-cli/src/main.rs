@@ -1374,4 +1374,93 @@ mod tests {
         let prompt = build_spawn_task(task, None).expect("passthrough should succeed");
         assert_eq!(prompt, task);
     }
+
+    #[cfg(test)]
+    mod daemon_register_tests {
+        use super::super::*;
+        use tempfile::TempDir;
+        use grotto_core::daemon::SessionRegistry;
+
+        fn setup() -> (TempDir, PathBuf) {
+            let tmp = TempDir::new().unwrap();
+            let dir = tmp.path().to_path_buf();
+            (tmp, dir)
+        }
+
+        #[test]
+        fn daemon_register_loads_existing_session() {
+            let (_tmp, dir) = setup();
+            
+            // Create existing session
+            let grotto = Grotto::new(&dir, 2, "existing task".into()).unwrap();
+            let original_session_id = grotto.config.session_id.clone();
+            
+            // Test register with existing session
+            let result = daemon_register(dir.clone(), None, 1, None, false);
+            assert!(result.is_ok());
+            
+            // Verify session registry was updated
+            let registry = SessionRegistry::load();
+            let session_id = original_session_id.as_ref().unwrap();
+            assert!(registry.sessions.contains_key(session_id));
+            
+            let entry = &registry.sessions[session_id];
+            assert_eq!(entry.task, "existing task");
+            assert_eq!(entry.agent_count, 2);
+            assert_eq!(entry.dir, dir.display().to_string());
+        }
+
+        #[test]
+        fn daemon_register_creates_scaffold_when_requested() {
+            let (_tmp, dir) = setup();
+            
+            // Test register with scaffold creation
+            let result = daemon_register(
+                dir.clone(),
+                Some("async-cron-123".to_string()),
+                3,
+                Some("async background task".to_string()),
+                true
+            );
+            assert!(result.is_ok());
+            
+            // Verify scaffold was created
+            assert!(dir.join(".grotto").exists());
+            assert!(dir.join(".grotto/config.toml").exists());
+            
+            // Verify session was loaded/created with custom ID
+            let grotto = Grotto::load(&dir).unwrap();
+            assert_eq!(grotto.config.session_id, Some("async-cron-123".to_string()));
+            assert_eq!(grotto.config.task, "async background task");
+            assert_eq!(grotto.config.agent_count, 3);
+            
+            // Verify registry entry
+            let registry = SessionRegistry::load();
+            assert!(registry.sessions.contains_key("async-cron-123"));
+        }
+
+        #[test]
+        fn daemon_register_fails_without_scaffold_or_existing() {
+            let (_tmp, dir) = setup();
+            
+            // Test register without existing session and without scaffold flag
+            let result = daemon_register(dir, None, 1, None, false);
+            assert!(result.is_err());
+            
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("No .grotto directory found"));
+            assert!(err.contains("create-scaffold not specified"));
+        }
+
+        #[test]
+        fn daemon_register_uses_default_task_when_none_provided() {
+            let (_tmp, dir) = setup();
+            
+            let result = daemon_register(dir.clone(), None, 1, None, true);
+            assert!(result.is_ok());
+            
+            let grotto = Grotto::load(&dir).unwrap();
+            assert_eq!(grotto.config.task, "Async run");
+        }
+    }
 }
