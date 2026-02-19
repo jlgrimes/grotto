@@ -1211,6 +1211,16 @@ mod tests {
     }
 
     #[test]
+    fn test_web_app_no_stale_complete_from_history_reason_calls() {
+        let app_js = include_str!("../web/app.js");
+
+        assert!(
+            !app_js.contains("completeFromHistory('"),
+            "completeFromHistory no longer accepts a reason argument; callers should not pass one"
+        );
+    }
+
+    #[test]
     fn test_snapshot_with_grotto_state() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().to_path_buf();
