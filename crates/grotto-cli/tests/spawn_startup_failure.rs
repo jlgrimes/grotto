@@ -172,6 +172,109 @@ fn status_shows_startup_failed_when_tmux_missing() {
 }
 
 #[test]
+fn status_infers_completed_from_stream_when_tmux_missing() {
+    let (_bin_dir, path) = setup_fake_binaries();
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    // First create a normal project/session state.
+    let spawn_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
+        .args([
+            "--dir",
+            &project.path().display().to_string(),
+            "spawn",
+            "1",
+            "test task",
+        ])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("GROTTO_TEST_STATE_DIR", home.path())
+        .env("GROTTO_STARTUP_CHECK_MS", "0")
+        .env("TMUX_HAS_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(spawn_output.status.success());
+
+    // Simulate completed terminal output after tmux session disappears.
+    fs::write(
+        project
+            .path()
+            .join(".grotto/agents/agent-1/stream.log"),
+        "All done. Summary of what I accomplished... committed and pushed",
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
+        .args([
+            "--dir",
+            &project.path().display().to_string(),
+            "status",
+        ])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("GROTTO_TEST_STATE_DIR", home.path())
+        .env("TMUX_HAS_SESSION", "0")
+        .output()
+        .unwrap();
+
+    assert!(status_output.status.success());
+    let stdout = String::from_utf8_lossy(&status_output.stdout);
+    let lower = stdout.to_lowercase();
+    assert!(lower.contains("tmux session: grotto (completed)"), "stdout: {}", stdout);
+    assert!(lower.contains("done"), "stdout: {}", stdout);
+}
+
+#[test]
+fn status_keeps_not_found_when_no_completion_signal() {
+    let (_bin_dir, path) = setup_fake_binaries();
+    let project = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+
+    let spawn_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
+        .args([
+            "--dir",
+            &project.path().display().to_string(),
+            "spawn",
+            "1",
+            "test task",
+        ])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("GROTTO_TEST_STATE_DIR", home.path())
+        .env("GROTTO_STARTUP_CHECK_MS", "0")
+        .env("TMUX_HAS_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(spawn_output.status.success());
+
+    fs::write(
+        project
+            .path()
+            .join(".grotto/agents/agent-1/stream.log"),
+        "still starting up",
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_grotto"))
+        .args([
+            "--dir",
+            &project.path().display().to_string(),
+            "status",
+        ])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("GROTTO_TEST_STATE_DIR", home.path())
+        .env("TMUX_HAS_SESSION", "0")
+        .output()
+        .unwrap();
+
+    assert!(status_output.status.success());
+    let stdout = String::from_utf8_lossy(&status_output.stdout);
+    let lower = stdout.to_lowercase();
+    assert!(lower.contains("tmux session: grotto (not found)"), "stdout: {}", stdout);
+}
+
+#[test]
 fn spawn_success_behavior_unchanged_when_session_is_alive() {
     let (_bin_dir, path) = setup_fake_binaries();
     let project = TempDir::new().unwrap();
