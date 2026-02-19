@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use futures::{SinkExt, StreamExt};
+use futures::{Sink, SinkExt, StreamExt};
 use grotto_core::daemon::{self, SessionEntry, SessionRegistry};
 use grotto_core::monitor::{self, AgentPhase};
 use grotto_core::{AgentState, Event, Grotto};
@@ -419,6 +419,25 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_ws(socket, state.tx.clone(), state.grotto_dir.clone()))
 }
 
+async fn forward_broadcast_to_ws<S>(mut sender: S, mut rx: broadcast::Receiver<String>)
+where
+    S: Sink<Message> + Unpin,
+{
+    loop {
+        match rx.recv().await {
+            Ok(msg) => {
+                if sender.send(Message::Text(msg.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                eprintln!("ws receiver lagged; skipped {skipped} messages");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 async fn handle_ws(socket: WebSocket, tx: broadcast::Sender<String>, grotto_dir: PathBuf) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -428,14 +447,10 @@ async fn handle_ws(socket: WebSocket, tx: broadcast::Sender<String>, grotto_dir:
         let _ = sender.send(Message::Text(json.into())).await;
     }
 
-    let mut rx = tx.subscribe();
+    let rx = tx.subscribe();
 
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
-            }
-        }
+        forward_broadcast_to_ws(sender, rx).await;
     });
 
     let mut recv_task =
@@ -1055,6 +1070,8 @@ async fn read_new_events(path: &std::path::Path, line_count: &Arc<RwLock<usize>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{channel::mpsc, StreamExt};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]
@@ -1237,6 +1254,54 @@ mod tests {
         let events = read_new_events(&path, &line_count).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message, Some("second".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_forward_broadcast_survives_lagged() {
+        let (tx, rx) = broadcast::channel::<String>(2);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(1);
+
+        let forward = tokio::spawn(async move {
+            forward_broadcast_to_ws(sink_tx, rx).await;
+        });
+
+        tx.send("first".to_string()).unwrap();
+        tokio::task::yield_now().await;
+
+        tx.send("second".to_string()).unwrap();
+        tokio::task::yield_now().await;
+
+        for i in 0..5 {
+            let _ = tx.send(format!("spam-{i}"));
+        }
+
+        let _ = tokio::time::timeout(Duration::from_secs(1), sink_rx.next())
+            .await
+            .expect("timeout waiting for first message");
+        let _ = tokio::time::timeout(Duration::from_secs(1), sink_rx.next())
+            .await
+            .expect("timeout waiting for second message");
+
+        tx.send("after".to_string()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(msg) = sink_rx.next().await {
+                    if let Message::Text(text) = msg {
+                        if text == "after" {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for post-lag message");
+
+        drop(tx);
+        let _ = tokio::time::timeout(Duration::from_secs(1), forward)
+            .await
+            .expect("forward task did not finish");
     }
 
     #[test]
