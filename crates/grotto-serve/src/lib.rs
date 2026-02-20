@@ -579,17 +579,17 @@ fn infer_session_status(entry: &SessionEntry) -> String {
 
 async fn api_list_sessions(state: Arc<DaemonState>) -> impl IntoResponse {
     state.sync_from_registry().await;
-    let registry = SessionRegistry::load();
+    let sessions = state.sessions.read().await;
     let mut result: Vec<SessionResponse> = Vec::new();
 
-    for session in registry.sessions.values() {
+    for session in sessions.values() {
         result.push(SessionResponse {
-            id: session.id.clone(),
-            dir: session.dir.clone(),
-            agent_count: Some(session.agent_count),
-            task: Some(session.task.clone()),
-            status: infer_session_status(session),
-            last_updated: read_last_event_timestamp(&session.dir),
+            id: session.entry.id.clone(),
+            dir: session.entry.dir.clone(),
+            agent_count: Some(session.entry.agent_count),
+            task: Some(session.entry.task.clone()),
+            status: infer_session_status(&session.entry),
+            last_updated: read_last_event_timestamp(&session.entry.dir),
         });
     }
 
@@ -677,12 +677,13 @@ async fn api_unregister_session(
 
 async fn api_session_events(state: Arc<DaemonState>, Path(id): Path<String>) -> impl IntoResponse {
     state.sync_from_registry().await;
-    let registry = SessionRegistry::load();
-    match registry.sessions.get(&id) {
+    let sessions = state.sessions.read().await;
+    match sessions.get(&id) {
         Some(session) => {
-            let events_path = PathBuf::from(&session.dir)
+            let events_path = PathBuf::from(&session.entry.dir)
                 .join(".grotto")
                 .join("events.jsonl");
+            drop(sessions);
             let content = std::fs::read_to_string(events_path).unwrap_or_default();
             let events: Vec<serde_json::Value> = content
                 .lines()
@@ -707,16 +708,6 @@ async fn daemon_ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     state.sync_from_registry().await;
-
-    // Enforce registry as source of truth for route validity.
-    let registry = SessionRegistry::load();
-    if !registry.sessions.contains_key(&id) {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            format!("Session '{}' not found", id),
-        )
-            .into_response();
-    }
 
     let sessions = state.sessions.read().await;
     match sessions.get(&id) {
